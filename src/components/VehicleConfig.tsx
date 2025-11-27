@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Truck, Trash2, Edit, X } from "lucide-react";
+import { Truck, Trash2, Edit, X, Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
   AlertDialog,
@@ -16,6 +16,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface Vehicle {
   id?: string;
@@ -39,9 +45,11 @@ interface VehicleConfigProps {
   vehicles: Vehicle[];
   onMapClickMode?: (mode: "start" | "end" | "start-selected" | "end-selected" | null, callback: (lon: number, lat: number) => void) => void;
   onLocationUpdate?: (type: "start" | "end", location: { lon: number; lat: number } | null) => void;
+  isDialogOpen?: boolean;
+  setIsDialogOpen?: (open: boolean) => void;
 }
 
-const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, onLocationUpdate }: VehicleConfigProps) => {
+const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen }: VehicleConfigProps) => {
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [name, setName] = useState("");
   const [capacity, setCapacity] = useState("100");
@@ -241,6 +249,7 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, on
     if (editingVehicle && editingVehicle.id && onUpdate) {
       onUpdate(editingVehicle.id, vehicle);
       setEditingVehicle(null);
+      setIsDialogOpen?.(false);
       toast({
         title: "Vehículo actualizado",
         description: "El vehículo ha sido actualizado exitosamente",
@@ -267,224 +276,42 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, on
     }
   };
 
+  const handleEditClick = (vehicle: Vehicle) => {
+    setEditingVehicle(vehicle);
+    setIsDialogOpen?.(true);
+  };
+
+  const handleDialogOpenChange = (open: boolean) => {
+    setIsDialogOpen?.(open);
+    if (!open) {
+      setEditingVehicle(null);
+    }
+  };
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <Truck className="w-5 h-5" />
-            {editingVehicle ? "Editar Vehículo" : "Configurar Vehículos"}
-          </span>
-          {editingVehicle && (
+    <>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center justify-between">
+            <span className="flex items-center gap-2">
+              <Truck className="w-5 h-5" />
+              Vehículos ({vehicles.length})
+            </span>
             <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={() => setEditingVehicle(null)}
-              className="h-8 w-8"
+              onClick={() => {
+                setEditingVehicle(null);
+                setIsDialogOpen?.(true);
+              }}
+              size="sm"
             >
-              <X className="h-4 w-4" />
+              <Plus className="w-4 h-4 mr-2" />
+              Agregar Vehículo
             </Button>
-          )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <Label htmlFor="vehicle-name">Nombre del Vehículo</Label>
-            <Input
-              id="vehicle-name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Ej: Camión 1"
-            />
-          </div>
-          <div>
-            <Label htmlFor="capacity">Capacidad</Label>
-            <Input
-              id="capacity"
-              type="number"
-              value={capacity}
-              onChange={(e) => setCapacity(e.target.value)}
-              placeholder="100"
-            />
-          </div>
-          <div>
-            <Label htmlFor="max-distance">Distancia Máxima (km)</Label>
-            <Input
-              id="max-distance"
-              type="number"
-              value={maxDistance}
-              onChange={(e) => setMaxDistance(e.target.value)}
-              placeholder="100"
-            />
-          </div>
-
-          {/* Start Location Configuration */}
-          <div className="space-y-2 pt-2 border-t">
-            <Label>Ubicación de Inicio</Label>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant={startLocationMode === "pickup" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleStartLocationModeChange("pickup")}
-                className="flex-1"
-              >
-                Primer Punto
-              </Button>
-              <Button
-                type="button"
-                variant={startLocationMode === "map" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleStartLocationModeChange("map")}
-                className="flex-1"
-              >
-                📍 Mapa
-              </Button>
-              <Button
-                type="button"
-                variant={startLocationMode === "manual" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleStartLocationModeChange("manual")}
-                className="flex-1"
-              >
-                Manual
-              </Button>
-            </div>
-            {startLocationMode === "map" && (
-              <p className="text-xs text-muted-foreground">
-                Haz clic en el mapa para seleccionar la ubicación de inicio
-              </p>
-            )}
-            {startLocationMode === "manual" && (
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <div>
-                  <Label htmlFor="start-lon" className="text-xs">Longitud</Label>
-                  <Input
-                    id="start-lon"
-                    type="number"
-                    step="any"
-                    value={startLon}
-                    onChange={(e) => {
-                      setStartLon(e.target.value);
-                    }}
-                    placeholder="-74.0994"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="start-lat" className="text-xs">Latitud</Label>
-                  <Input
-                    id="start-lat"
-                    type="number"
-                    step="any"
-                    value={startLat}
-                    onChange={(e) => {
-                      setStartLat(e.target.value);
-                    }}
-                    placeholder="4.6921"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* End Location Configuration */}
-          <div className="space-y-2 pt-2 border-t">
-            <Label>Ubicación de Fin</Label>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant={endLocationMode === "none" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleEndLocationModeChange("none")}
-                className="flex-1"
-              >
-                Ninguna
-              </Button>
-              <Button
-                type="button"
-                variant={endLocationMode === "pickup" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleEndLocationModeChange("pickup")}
-                className="flex-1"
-              >
-                Último Punto
-              </Button>
-              <Button
-                type="button"
-                variant={endLocationMode === "map" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleEndLocationModeChange("map")}
-                className="flex-1"
-              >
-                📍 Mapa
-              </Button>
-              <Button
-                type="button"
-                variant={endLocationMode === "manual" ? "default" : "outline"}
-                size="sm"
-                onClick={() => handleEndLocationModeChange("manual")}
-                className="flex-1"
-              >
-                Manual
-              </Button>
-            </div>
-            {endLocationMode === "map" && (
-              <p className="text-xs text-muted-foreground">
-                Haz clic en el mapa para seleccionar la ubicación de fin
-              </p>
-            )}
-            {endLocationMode === "manual" && (
-              <div className="grid grid-cols-2 gap-2 mt-2">
-                <div>
-                  <Label htmlFor="end-lon" className="text-xs">Longitud</Label>
-                  <Input
-                    id="end-lon"
-                    type="number"
-                    step="any"
-                    value={endLon}
-                    onChange={(e) => setEndLon(e.target.value)}
-                    placeholder="-74.0994"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="end-lat" className="text-xs">Latitud</Label>
-                  <Input
-                    id="end-lat"
-                    type="number"
-                    step="any"
-                    value={endLat}
-                    onChange={(e) => setEndLat(e.target.value)}
-                    placeholder="4.6921"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex gap-2">
-            {editingVehicle && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setEditingVehicle(null)}
-                className="flex-1"
-              >
-                Cancelar
-              </Button>
-            )}
-            <Button type="submit" className={editingVehicle ? "flex-1" : "w-full"} variant="secondary">
-              <Truck className="w-4 h-4 mr-2" />
-              {editingVehicle ? "Actualizar Vehículo" : "Agregar Vehículo"}
-            </Button>
-          </div>
-        </form>
-
-        {vehicles.length > 0 && (
-          <div className="mt-6 space-y-2">
-            <h3 className="font-semibold text-sm">Vehículos Configurados ({vehicles.length})</h3>
-            <div className="space-y-2">
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {vehicles.length > 0 ? (
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {vehicles.map((vehicle, idx) => (
                 <div
                   key={vehicle.id || idx}
@@ -502,48 +329,274 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, on
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() => setEditingVehicle(vehicle)}
+                        onClick={() => handleEditClick(vehicle)}
                       >
                         <Edit className="h-4 w-4" />
                       </Button>
                       <AlertDialog>
-                      <AlertDialogTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>¿Eliminar vehículo?</AlertDialogTitle>
-                          <AlertDialogDescription>
-                            ¿Estás seguro de que deseas eliminar el vehículo "{vehicle.name}"? 
-                            Esta acción no se puede deshacer.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                          <AlertDialogAction
-                            onClick={() => onDelete(vehicle.id!)}
-                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                        <AlertDialogTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-destructive hover:text-destructive hover:bg-destructive/10"
                           >
-                            Eliminar
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>¿Eliminar vehículo?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              ¿Estás seguro de que deseas eliminar el vehículo "{vehicle.name}"? 
+                              Esta acción no se puede deshacer.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                            <AlertDialogAction
+                              onClick={() => onDelete(vehicle.id!)}
+                              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            >
+                              Eliminar
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   )}
                 </div>
               ))}
             </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+          ) : (
+            <p className="text-sm text-muted-foreground text-center py-4">
+              No hay vehículos configurados. Haz clic en "Agregar Vehículo" para comenzar.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Vehicle Form Dialog */}
+      <Dialog open={isDialogOpen || false} onOpenChange={handleDialogOpenChange}>
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Truck className="w-5 h-5" />
+                {editingVehicle ? "Editar Vehículo" : "Agregar Vehículo"}
+              </span>
+              {editingVehicle && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    setEditingVehicle(null);
+                    setIsDialogOpen?.(false);
+                  }}
+                  className="h-8 w-8"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              )}
+            </DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <Label htmlFor="vehicle-name">Nombre del Vehículo</Label>
+              <Input
+                id="vehicle-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Ej: Camión 1"
+              />
+            </div>
+            <div>
+              <Label htmlFor="capacity">Capacidad</Label>
+              <Input
+                id="capacity"
+                type="number"
+                value={capacity}
+                onChange={(e) => setCapacity(e.target.value)}
+                placeholder="100"
+              />
+            </div>
+            <div>
+              <Label htmlFor="max-distance">Distancia Máxima (km)</Label>
+              <Input
+                id="max-distance"
+                type="number"
+                value={maxDistance}
+                onChange={(e) => setMaxDistance(e.target.value)}
+                placeholder="100"
+              />
+            </div>
+
+            {/* Start Location Configuration */}
+            <div className="space-y-2 pt-2 border-t">
+              <Label>Ubicación de Inicio</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={startLocationMode === "pickup" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleStartLocationModeChange("pickup")}
+                  className="flex-1"
+                >
+                  Primer Punto
+                </Button>
+                <Button
+                  type="button"
+                  variant={startLocationMode === "map" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleStartLocationModeChange("map")}
+                  className="flex-1"
+                >
+                  📍 Mapa
+                </Button>
+                <Button
+                  type="button"
+                  variant={startLocationMode === "manual" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleStartLocationModeChange("manual")}
+                  className="flex-1"
+                >
+                  Manual
+                </Button>
+              </div>
+              {startLocationMode === "map" && (
+                <p className="text-xs text-muted-foreground">
+                  Haz clic en el mapa para seleccionar la ubicación de inicio
+                </p>
+              )}
+              {startLocationMode === "manual" && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <Label htmlFor="start-lon" className="text-xs">Longitud</Label>
+                    <Input
+                      id="start-lon"
+                      type="number"
+                      step="any"
+                      value={startLon}
+                      onChange={(e) => {
+                        setStartLon(e.target.value);
+                      }}
+                      placeholder="-74.0994"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="start-lat" className="text-xs">Latitud</Label>
+                    <Input
+                      id="start-lat"
+                      type="number"
+                      step="any"
+                      value={startLat}
+                      onChange={(e) => {
+                        setStartLat(e.target.value);
+                      }}
+                      placeholder="4.6921"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* End Location Configuration */}
+            <div className="space-y-2 pt-2 border-t">
+              <Label>Ubicación de Fin</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={endLocationMode === "none" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleEndLocationModeChange("none")}
+                  className="flex-1"
+                >
+                  Ninguna
+                </Button>
+                <Button
+                  type="button"
+                  variant={endLocationMode === "pickup" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleEndLocationModeChange("pickup")}
+                  className="flex-1"
+                >
+                  Último Punto
+                </Button>
+                <Button
+                  type="button"
+                  variant={endLocationMode === "map" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleEndLocationModeChange("map")}
+                  className="flex-1"
+                >
+                  📍 Mapa
+                </Button>
+                <Button
+                  type="button"
+                  variant={endLocationMode === "manual" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => handleEndLocationModeChange("manual")}
+                  className="flex-1"
+                >
+                  Manual
+                </Button>
+              </div>
+              {endLocationMode === "map" && (
+                <p className="text-xs text-muted-foreground">
+                  Haz clic en el mapa para seleccionar la ubicación de fin
+                </p>
+              )}
+              {endLocationMode === "manual" && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div>
+                    <Label htmlFor="end-lon" className="text-xs">Longitud</Label>
+                    <Input
+                      id="end-lon"
+                      type="number"
+                      step="any"
+                      value={endLon}
+                      onChange={(e) => setEndLon(e.target.value)}
+                      placeholder="-74.0994"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="end-lat" className="text-xs">Latitud</Label>
+                    <Input
+                      id="end-lat"
+                      type="number"
+                      step="any"
+                      value={endLat}
+                      onChange={(e) => setEndLat(e.target.value)}
+                      placeholder="4.6921"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2">
+              {editingVehicle && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    setEditingVehicle(null);
+                    setIsDialogOpen?.(false);
+                  }}
+                  className="flex-1"
+                >
+                  Cancelar
+                </Button>
+              )}
+              <Button type="submit" className={editingVehicle ? "flex-1" : "w-full"} variant="secondary">
+                <Truck className="w-4 h-4 mr-2" />
+                {editingVehicle ? "Actualizar Vehículo" : "Agregar Vehículo"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
 

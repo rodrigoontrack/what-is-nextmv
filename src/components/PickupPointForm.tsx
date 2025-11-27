@@ -2,8 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, X } from "lucide-react";
+import { Plus } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface PickupPointFormProps {
@@ -27,7 +26,12 @@ const PickupPointForm = ({ onAdd, editingPoint, onCancelEdit }: PickupPointFormP
       setAddress(editingPoint.address);
       setLatitude(editingPoint.latitude.toString());
       setLongitude(editingPoint.longitude.toString());
-      setQuantity((editingPoint.quantity || 1).toString());
+      // Handle quantity: use the actual value if it exists (including 0), otherwise default to 1
+      // Check for null, undefined, or NaN explicitly
+      const qty = editingPoint.quantity != null && !isNaN(editingPoint.quantity) 
+        ? editingPoint.quantity 
+        : 1;
+      setQuantity(qty.toString());
     } else {
       setName("");
       setAddress("");
@@ -90,28 +94,7 @@ const PickupPointForm = ({ onAdd, editingPoint, onCancelEdit }: PickupPointFormP
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between">
-          <span className="flex items-center gap-2">
-            <Plus className="w-5 h-5" />
-            {editingPoint ? "Editar Punto de Recogida" : "Agregar Punto de Recogida"}
-          </span>
-          {editingPoint && onCancelEdit && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={onCancelEdit}
-              className="h-8 w-8"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          )}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <Label htmlFor="name">Nombre</Label>
             <Input
@@ -182,8 +165,6 @@ const PickupPointForm = ({ onAdd, editingPoint, onCancelEdit }: PickupPointFormP
             </Button>
           </div>
         </form>
-      </CardContent>
-    </Card>
   );
 };
 

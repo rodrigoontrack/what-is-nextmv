@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 
 interface PickupPoint {
   id: string;
@@ -9,9 +11,19 @@ interface PickupPoint {
   quantity?: number;
 }
 
+interface Vehicle {
+  id: string;
+  name: string;
+  capacity?: number;
+  max_distance?: number;
+}
+
 interface MapProps {
   pickupPoints: PickupPoint[];
   routes: any[];
+  vehicles?: Vehicle[];
+  visibleRoutes?: Set<number>; // Set of route indices that should be visible
+  onRouteVisibilityChange?: (routeIndex: number, visible: boolean) => void;
   onMapClick?: (lng: number, lat: number) => void;
   clickMode?: boolean;
   focusedPoint?: PickupPoint | null;
@@ -22,7 +34,7 @@ interface MapProps {
 
 const MAPBOX_TOKEN = "pk.eyJ1Ijoicm9kcmlnb2l2YW5mIiwiYSI6ImNtaHhoOHk4azAxNjcyanExb2E2dHl6OTMifQ.VO6hcKB-pIDvb8ZFFpLdfw";
 
-const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation }: MapProps) => {
+const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation }: MapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -260,6 +272,20 @@ const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint
       // Use async function to handle API calls
       (async () => {
         await Promise.all(vehicleRoutes.map(async (coordinates, vehicleIndex) => {
+        // Skip if route is not visible
+        if (visibleRoutes && !visibleRoutes.has(vehicleIndex)) {
+          // Hide the layer if it exists
+          try {
+            const layerId = `route-${vehicleIndex}`;
+            if (map.current!.getLayer(layerId)) {
+              map.current!.setLayoutProperty(layerId, 'visibility', 'none');
+            }
+          } catch (e) {
+            // Layer might not exist yet, ignore
+          }
+          return;
+        }
+        
         const sourceId = `route-${vehicleIndex}`;
         const layerId = `route-${vehicleIndex}`;
         const routeColor = routeColors[vehicleIndex % routeColors.length]; // Cycle through colors
@@ -302,6 +328,7 @@ const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint
                 layout: {
                   "line-join": "round",
                   "line-cap": "round",
+                  "visibility": visibleRoutes && !visibleRoutes.has(vehicleIndex) ? "none" : "visible",
                 },
                 paint: {
                   "line-color": routeColor,
@@ -341,6 +368,7 @@ const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint
                 layout: {
                   "line-join": "round",
                   "line-cap": "round",
+                  "visibility": visibleRoutes && !visibleRoutes.has(vehicleIndex) ? "none" : "visible",
                 },
                 paint: {
                   "line-color": routeColor,
@@ -402,7 +430,24 @@ const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint
       });
       map.current!.fitBounds(bounds, { padding: 50 });
     }
-  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation]);
+  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation, visibleRoutes]);
+
+  // Update route visibility when visibleRoutes changes
+  useEffect(() => {
+    if (!map.current || !mapLoaded || routes.length === 0) return;
+
+    routes.forEach((_, vehicleIndex) => {
+      const layerId = `route-${vehicleIndex}`;
+      try {
+        if (map.current!.getLayer(layerId)) {
+          const isVisible = !visibleRoutes || visibleRoutes.has(vehicleIndex);
+          map.current!.setLayoutProperty(layerId, 'visibility', isVisible ? 'visible' : 'none');
+        }
+      } catch (e) {
+        // Layer might not exist yet, ignore
+      }
+    });
+  }, [visibleRoutes, mapLoaded, routes.length]);
 
   // Focus on specific point when focusedPoint changes
   useEffect(() => {
@@ -426,6 +471,34 @@ const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint
     }
   }, [clickMode, mapLoaded]);
 
+  // Color palette for different vehicles (must match the one used for routes)
+  const routeColors = [
+    "#26bc30", // Green
+    "#3b82f6", // Blue
+    "#f59e0b", // Amber
+    "#ef4444", // Red
+    "#8b5cf6", // Purple
+    "#ec4899", // Pink
+    "#06b6d4", // Cyan
+    "#84cc16", // Lime
+  ];
+
+  // Get vehicle names for legend
+  const getVehicleName = (routeIndex: number, route: any): string => {
+    // Try to find vehicle by vehicle_id in route
+    if (route.vehicle_id && vehicles.length > 0) {
+      const vehicle = vehicles.find(v => v.id === route.vehicle_id);
+      if (vehicle) return vehicle.name;
+    }
+    // Try to find by matching route_data.id with vehicle id
+    if (route.route_data?.id && vehicles.length > 0) {
+      const vehicle = vehicles.find(v => v.id === route.route_data.id || `vehicle-${vehicles.indexOf(v)}` === route.route_data.id);
+      if (vehicle) return vehicle.name;
+    }
+    // Fallback to vehicle index
+    return vehicles[routeIndex]?.name || `Vehículo ${routeIndex + 1}`;
+  };
+
   return (
     <div className="relative w-full h-full">
       <div ref={mapContainer} className="w-full h-full rounded-lg shadow-lg" />
@@ -433,6 +506,45 @@ const Map = ({ pickupPoints, routes, onMapClick, clickMode = false, focusedPoint
         <div className="absolute top-4 left-4 bg-primary text-primary-foreground px-4 py-2 rounded-lg shadow-lg z-10">
           <p className="text-sm font-semibold">Click on the map to add a pickup point</p>
         </div>
+      )}
+      {routes.length > 0 && (
+        <Card className="absolute bottom-4 left-4 z-20 shadow-lg max-w-sm">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-base">Leyenda de Rutas</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="space-y-2">
+              {routes.map((route, index) => {
+                const color = routeColors[index % routeColors.length];
+                const vehicleName = getVehicleName(index, route);
+                const isVisible = !visibleRoutes || visibleRoutes.has(index);
+                return (
+                  <div key={index} className="flex items-center gap-2">
+                    <Checkbox
+                      checked={isVisible}
+                      onCheckedChange={(checked) => {
+                        if (onRouteVisibilityChange) {
+                          onRouteVisibilityChange(index, checked === true);
+                        }
+                      }}
+                      id={`route-${index}`}
+                    />
+                    <label
+                      htmlFor={`route-${index}`}
+                      className="flex items-center gap-2 flex-1 cursor-pointer"
+                    >
+                      <div
+                        className="w-4 h-4 rounded-sm flex-shrink-0"
+                        style={{ backgroundColor: color }}
+                      />
+                      <span className="truncate text-sm">{vehicleName}</span>
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

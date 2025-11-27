@@ -7,10 +7,16 @@ import Map from "@/components/Map";
 import PickupPointForm from "@/components/PickupPointForm";
 import VehicleConfig from "@/components/VehicleConfig";
 import PickupPointsList from "@/components/PickupPointsList";
-import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft } from "lucide-react";
+import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft, Plus, History, X, Upload } from "lucide-react";
 import { Loader2 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 interface PickupPoint {
   id: string;
@@ -53,8 +59,13 @@ const Index = () => {
   const [showNextmvJson, setShowNextmvJson] = useState(false);
   const [runs, setRuns] = useState<any[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunData, setSelectedRunData] = useState<any | null>(null);
   const [isLoadingRuns, setIsLoadingRuns] = useState(false);
   const [isNewRunMode, setIsNewRunMode] = useState(false);
+  const [isPickupPointDialogOpen, setIsPickupPointDialogOpen] = useState(false);
+  const [isVehicleDialogOpen, setIsVehicleDialogOpen] = useState(false);
+  const [isPreviousRunsDialogOpen, setIsPreviousRunsDialogOpen] = useState(false);
+  const [visibleRoutes, setVisibleRoutes] = useState<Set<number>>(new Set());
   const { toast } = useToast();
 
   useEffect(() => {
@@ -138,6 +149,9 @@ const Index = () => {
       const runData = await response.json();
       console.log("Loaded run data:", runData);
       
+      // Store the run data for display
+      setSelectedRunData(runData);
+      
       // Check if run has solutions
       const solutions = runData.output?.solutions || runData.solutions;
       if (!solutions || solutions.length === 0) {
@@ -182,7 +196,10 @@ const Index = () => {
       if (routesError) {
         console.error("Error loading routes:", routesError);
       } else {
-        setRoutes(routesData || []);
+        const loadedRoutes = routesData || [];
+        setRoutes(loadedRoutes);
+        // Initialize all routes as visible
+        setVisibleRoutes(new Set(loadedRoutes.map((_, index) => index)));
       }
       
       toast({
@@ -204,7 +221,9 @@ const Index = () => {
   const handleNewRun = () => {
     setIsNewRunMode(true);
     setSelectedRunId(null);
+    setSelectedRunData(null);
     setRoutes([]);
+    setVisibleRoutes(new Set());
     // Clear routes from database
     supabase
       .from("routes")
@@ -221,7 +240,12 @@ const Index = () => {
       console.error("Error loading pickup points:", error);
       return;
     }
-    setPickupPoints(data || []);
+    // Normalize quantity field - ensure it's always a number (default to 1 if null/undefined)
+    const normalizedData = (data || []).map((point: any) => ({
+      ...point,
+      quantity: point.quantity != null && !isNaN(point.quantity) ? point.quantity : 1,
+    }));
+    setPickupPoints(normalizedData);
   };
 
   const loadVehicles = async () => {
@@ -237,17 +261,18 @@ const Index = () => {
     if (editingPickupPoint) {
       // Update existing point
       const { id, ...updateData } = point;
-      // Build update object explicitly to ensure quantity is included
+      // Build update object explicitly to ensure quantity is always included
+      // Quantity should always be set (form defaults to 1 if not provided)
+      const quantity = updateData.quantity != null && !isNaN(updateData.quantity) 
+        ? Math.max(1, Math.floor(updateData.quantity)) 
+        : 1;
       const dataToUpdate: any = {
         name: updateData.name,
         address: updateData.address,
         latitude: updateData.latitude,
         longitude: updateData.longitude,
+        quantity: quantity, // Always include quantity
       };
-      // Include quantity if it's defined
-      if (updateData.quantity !== undefined && updateData.quantity !== null) {
-        dataToUpdate.quantity = updateData.quantity;
-      }
       
       let { data, error } = await supabase
         .from("pickup_points")
@@ -292,6 +317,7 @@ const Index = () => {
       if (data) {
         setPickupPoints(pickupPoints.map((p) => (p.id === editingPickupPoint.id ? data : p)));
         setEditingPickupPoint(null);
+        setIsPickupPointDialogOpen(false);
       }
     } else {
       // Insert new point - remove id if present since it's auto-generated
@@ -347,16 +373,249 @@ const Index = () => {
 
       if (data) {
         setPickupPoints((prevPoints) => [...prevPoints, data]);
+        setIsPickupPointDialogOpen(false);
       }
     }
   };
 
   const handleEditPickupPoint = (point: PickupPoint) => {
     setEditingPickupPoint(point);
+    setIsPickupPointDialogOpen(true);
   };
 
   const handleCancelEditPickupPoint = () => {
     setEditingPickupPoint(null);
+    setIsPickupPointDialogOpen(false);
+  };
+
+  const handleExcelUpload = async (file: File) => {
+    try {
+      // Dynamically import xlsx library
+      // @ts-ignore - xlsx types may not be available until package is installed
+      const XLSX = await import("xlsx").catch(() => {
+        throw new Error("xlsx module not found. Please install it: npm install xlsx");
+      });
+      
+      // Read the file
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: "array" });
+      
+      // Get the first sheet
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      
+      // Convert to JSON
+      const jsonData = XLSX.utils.sheet_to_json(worksheet);
+      
+      if (!Array.isArray(jsonData) || jsonData.length === 0) {
+        toast({
+          title: "Error",
+          description: "El archivo Excel está vacío o no tiene formato válido",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Group points by latitude and longitude, summing quantities
+      interface PointData {
+        latitude: number;
+        longitude: number;
+        quantity: number;
+      }
+      
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const pointMap: any = {};
+      
+      for (const row of jsonData) {
+        const rowData = row as Record<string, any>;
+        
+        // Normalize column names (case-insensitive, handle variations)
+        const latitudeKey = Object.keys(rowData).find(
+          key => key.toLowerCase().trim() === "latitude" || key.toLowerCase().trim() === "lat"
+        );
+        const longitudeKey = Object.keys(rowData).find(
+          key => key.toLowerCase().trim() === "longitude" || key.toLowerCase().trim() === "lon" || key.toLowerCase().trim() === "lng"
+        );
+        const quantityKey = Object.keys(rowData).find(
+          key => key.toLowerCase().trim() === "quantity" || key.toLowerCase().trim() === "cantidad"
+        );
+        
+        if (!latitudeKey || !longitudeKey) {
+          console.warn("Row missing latitude or longitude:", rowData);
+          continue;
+        }
+        
+        const lat = parseFloat(rowData[latitudeKey]);
+        const lon = parseFloat(rowData[longitudeKey]);
+        // Parse quantity, default to 1 if missing or invalid
+        let qty = 1;
+        if (quantityKey) {
+          const parsedQty = parseFloat(rowData[quantityKey]);
+          if (!isNaN(parsedQty) && parsedQty > 0) {
+            qty = Math.floor(parsedQty); // Ensure integer
+          }
+        }
+        
+        if (isNaN(lat) || isNaN(lon)) {
+          console.warn("Invalid coordinates in row:", rowData);
+          continue;
+        }
+        
+        // Round coordinates to 7 decimal places for grouping (about 1.1cm precision)
+        const latKey = lat.toFixed(7);
+        const lonKey = lon.toFixed(7);
+        const key = `${latKey},${lonKey}`;
+        
+        if (pointMap[key]) {
+          // Sum quantities for duplicate coordinates
+          pointMap[key].quantity += qty;
+          console.log(`Combining duplicate coordinates ${key}: adding quantity ${qty}, total now: ${pointMap[key].quantity}`);
+        } else {
+          pointMap[key] = {
+            latitude: lat,
+            longitude: lon,
+            quantity: qty,
+          };
+        }
+      }
+      
+      const uniquePoints: PointData[] = Object.values(pointMap);
+      
+      if (uniquePoints.length === 0) {
+        toast({
+          title: "Error",
+          description: "No se encontraron coordenadas válidas en el archivo",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Convert map to array of points
+      const pointsToInsert = uniquePoints.map((point, index) => {
+        // Ensure quantity is always a valid integer >= 1
+        const quantity = Math.max(1, Math.floor(point.quantity || 1));
+        return {
+          name: `Punto ${pickupPoints.length + index + 1}`,
+          address: `${point.latitude.toFixed(6)}, ${point.longitude.toFixed(6)}`,
+          latitude: point.latitude,
+          longitude: point.longitude,
+          quantity: quantity, // Always set quantity
+        };
+      });
+
+      // Log combined points for debugging
+      console.log("Combined points with quantities:", pointsToInsert.map(p => ({
+        coords: `${p.latitude}, ${p.longitude}`,
+        quantity: p.quantity
+      })));
+
+      // Batch insert points
+      let insertedCount = 0;
+      const errors: string[] = [];
+
+      for (const pointData of pointsToInsert) {
+        try {
+          // Always include quantity - it's always calculated and should be >= 1
+          const quantity = Math.max(1, Math.floor(pointData.quantity || 1));
+          const dataToInsert: any = {
+            name: pointData.name,
+            address: pointData.address,
+            latitude: pointData.latitude,
+            longitude: pointData.longitude,
+            quantity: quantity, // Always include quantity in insert
+          };
+
+          let { data, error } = await supabase
+            .from("pickup_points")
+            .insert([dataToInsert])
+            .select()
+            .single();
+
+          // If error is about missing quantity column, retry without quantity
+          if (error && error.code === "PGRST204" && error.message?.includes("quantity")) {
+            const { quantity, ...dataWithoutQuantity } = dataToInsert;
+            const retryResult = await supabase
+              .from("pickup_points")
+              .insert([dataWithoutQuantity])
+              .select()
+              .single();
+            
+            if (retryResult.error) {
+              errors.push(`Error en ${pointData.name}: ${retryResult.error.message}`);
+              continue;
+            }
+            
+            data = retryResult.data;
+            error = null;
+          } else if (error) {
+            errors.push(`Error en ${pointData.name}: ${error.message}`);
+            continue;
+          }
+
+          if (data) {
+            setPickupPoints((prevPoints) => [...prevPoints, data]);
+            insertedCount++;
+          }
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : "Error desconocido";
+          errors.push(`Error procesando ${pointData.name}: ${errorMessage}`);
+        }
+      }
+
+      // Show results
+      if (errors.length > 0) {
+        toast({
+          title: "Carga parcialmente completada",
+          description: `Se agregaron ${insertedCount} puntos. ${errors.length} errores encontrados.`,
+          variant: "default",
+        });
+        console.error("Errors during Excel upload:", errors);
+      } else {
+        toast({
+          title: "Archivo cargado exitosamente",
+          description: `Se agregaron ${insertedCount} puntos de recogida (${pointMap.size} únicos después de combinar duplicados)`,
+        });
+      }
+    } catch (error) {
+      console.error("Error processing Excel file:", error);
+      const errorMessage = error instanceof Error ? error.message : "Error desconocido";
+      
+      if (errorMessage.includes("xlsx") || errorMessage.includes("Cannot find module")) {
+        toast({
+          title: "Error",
+          description: "La librería xlsx no está instalada. Por favor ejecuta: npm install xlsx",
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "Error",
+          description: `No se pudo procesar el archivo Excel: ${errorMessage}`,
+          variant: "destructive",
+        });
+      }
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // Check if it's an Excel file
+      const validExtensions = [".xlsx", ".xls", ".xlsm"];
+      const fileExtension = "." + file.name.split(".").pop()?.toLowerCase();
+      
+      if (!validExtensions.includes(fileExtension)) {
+        toast({
+          title: "Error",
+          description: "Por favor selecciona un archivo Excel (.xlsx, .xls, .xlsm)",
+          variant: "destructive",
+        });
+        return;
+      }
+      
+      handleExcelUpload(file);
+      // Reset input
+      e.target.value = "";
+    }
   };
 
   const handleMapClick = async (lng: number, lat: number) => {
@@ -460,6 +719,7 @@ const Index = () => {
     }
 
     setVehicles([...vehicles, data]);
+    setIsVehicleDialogOpen(false);
     
     // Update markers if vehicle has locations
     if (vehicle.start_location) {
@@ -540,6 +800,7 @@ const Index = () => {
     setIsOptimizing(true);
     setIsNewRunMode(true);
     setSelectedRunId(null);
+    setSelectedRunData(null);
     try {
       // Build the JSON payload that will be sent to Nextmv
       // Ensure all numeric values are explicitly numbers
@@ -1149,7 +1410,10 @@ const Index = () => {
       if (routesError) {
         console.error("Error loading routes:", routesError);
       } else {
-        setRoutes(routesData || []);
+        const loadedRoutes = routesData || [];
+        setRoutes(loadedRoutes);
+        // Initialize all routes as visible
+        setVisibleRoutes(new Set(loadedRoutes.map((_, index) => index)));
       }
       
       // Reload runs list to include the new run
@@ -1221,149 +1485,48 @@ const Index = () => {
           </Card>
         </div>
 
-        {/* Runs Selection and New Run Mode */}
+        {/* Optimization Controls */}
         <Card className="mb-6">
           <CardHeader>
             <CardTitle className="flex items-center justify-between">
-              <span>Ejecuciones de Optimización</span>
+              <span>Optimización de Rutas</span>
               <div className="flex gap-2">
                 <Button
-                  onClick={loadRuns}
+                  onClick={() => setIsPreviousRunsDialogOpen(true)}
                   variant="outline"
                   size="sm"
                   disabled={isLoadingRuns}
                 >
-                  {isLoadingRuns ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    "Actualizar"
-                  )}
+                  <History className="w-4 h-4 mr-2" />
+                  Ejecuciones Anteriores
                 </Button>
                 <Button
-                  onClick={handleNewRun}
-                  variant={isNewRunMode ? "default" : "outline"}
+                  onClick={handleOptimizeRoutes}
+                  disabled={isOptimizing || pickupPoints.length < 2 || vehicles.length === 0}
+                  className="bg-primary hover:bg-primary/90"
                   size="sm"
                 >
-                  <Play className="w-4 h-4 mr-2" />
-                  Nueva Ejecución
+                  {isOptimizing ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Optimizando...
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-4 h-4 mr-2" />
+                      Optimizar Rutas
+                    </>
+                  )}
                 </Button>
               </div>
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {isNewRunMode ? (
-              <div className="space-y-4">
-                {/* New Run Button */}
-                <div>
-                  <Button
-                    onClick={handleOptimizeRoutes}
-                    disabled={isOptimizing || pickupPoints.length < 2 || vehicles.length === 0}
-                    className="w-full bg-primary hover:bg-primary/90 h-16 text-xl font-bold shadow-lg"
-                    size="lg"
-                  >
-                    {isOptimizing ? (
-                      <>
-                        <Loader2 className="w-6 h-6 mr-3 animate-spin" />
-                        Optimizando Rutas...
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-6 h-6 mr-3" />
-                        Optimizar Rutas
-                      </>
-                    )}
-                  </Button>
-                  {(pickupPoints.length < 2 || vehicles.length === 0) && (
-                    <p className="text-sm text-muted-foreground text-center mt-2">
-                      {pickupPoints.length < 2 && "Necesitas al menos 2 puntos de recogida. "}
-                      {vehicles.length === 0 && "Necesitas configurar al menos 1 vehículo."}
-                    </p>
-                  )}
-                </div>
-                
-                {/* Button to go back to runs list */}
-                <div className="pt-4 border-t">
-                  <Button
-                    onClick={() => setIsNewRunMode(false)}
-                    variant="outline"
-                    className="w-full"
-                    size="lg"
-                  >
-                    <ArrowLeft className="w-4 h-4 mr-2" />
-                    Ver Ejecuciones Anteriores
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                {/* Runs List */}
-                <div>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Selecciona una ejecución para ver sus resultados en el mapa:
-                  </p>
-                  {isLoadingRuns ? (
-                    <div className="flex items-center justify-center py-8">
-                      <Loader2 className="w-6 h-6 animate-spin" />
-                    </div>
-                  ) : runs.length === 0 ? (
-                    <p className="text-sm text-muted-foreground text-center py-4">
-                      No hay ejecuciones disponibles
-                    </p>
-                  ) : (
-                    <div className="space-y-2 max-h-96 overflow-y-auto">
-                      {runs.map((run) => {
-                        const runId = run.id || run.run_id;
-                        const status = run.metadata?.status || run.status || "unknown";
-                        const createdAt = run.metadata?.created_at || run.created_at || "";
-                        const isSelected = selectedRunId === runId;
-                        
-                        // Format status for display
-                        const statusDisplay = status === "succeeded" ? "✓ Completado" :
-                                             status === "failed" ? "✗ Fallido" :
-                                             status === "error" ? "✗ Error" :
-                                             status === "running" ? "⟳ Ejecutando" :
-                                             status === "queued" ? "⏳ En cola" :
-                                             status;
-                        
-                        return (
-                          <Card
-                            key={runId}
-                            className={`cursor-pointer transition-colors ${
-                              isSelected
-                                ? "bg-primary text-primary-foreground"
-                                : "hover:bg-muted"
-                            }`}
-                            onClick={() => handleRunSelect(runId)}
-                          >
-                            <CardContent className="p-4">
-                              <div className="flex items-center justify-between">
-                                <div className="flex-1">
-                                  <p className="font-semibold text-sm">ID: {runId}</p>
-                                  <p className="text-xs opacity-80 mt-1">
-                                    {statusDisplay} | {createdAt ? new Date(createdAt).toLocaleString('es-ES', {
-                                      year: 'numeric',
-                                      month: 'short',
-                                      day: 'numeric',
-                                      hour: '2-digit',
-                                      minute: '2-digit'
-                                    }) : "Fecha desconocida"}
-                                  </p>
-                                </div>
-                                {isSelected && isOptimizing && (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                )}
-                                {isSelected && !isOptimizing && (
-                                  <span className="text-xs">✓ Seleccionado</span>
-                                )}
-                              </div>
-                            </CardContent>
-                          </Card>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </div>
+            {(pickupPoints.length < 2 || vehicles.length === 0) && (
+              <p className="text-sm text-muted-foreground text-center">
+                {pickupPoints.length < 2 && "Necesitas al menos 2 puntos de recogida. "}
+                {vehicles.length === 0 && "Necesitas configurar al menos 1 vehículo."}
+              </p>
             )}
           </CardContent>
         </Card>
@@ -1424,17 +1587,55 @@ const Index = () => {
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="pickup-points" className="space-y-6 mt-0">
-                <PickupPointForm 
-                  onAdd={handleAddPickupPoint} 
-                  editingPoint={editingPickupPoint}
-                  onCancelEdit={handleCancelEditPickupPoint}
-                />
-                <PickupPointsList 
-                  points={pickupPoints} 
-                  onRemove={handleRemovePickupPoint}
-                  onPointClick={(point) => setFocusedPoint(point)}
-                  onEdit={handleEditPickupPoint}
-                />
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center justify-between">
+                      <span className="flex items-center gap-2">
+                        <MapPin className="w-5 h-5" />
+                        Pickup Points
+                      </span>
+                      <div className="flex gap-2">
+                        <label htmlFor="excel-upload" className="cursor-pointer">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="cursor-pointer"
+                            onClick={() => document.getElementById("excel-upload")?.click()}
+                          >
+                            <Upload className="w-4 h-4 mr-2" />
+                            Subir Excel
+                          </Button>
+                          <input
+                            id="excel-upload"
+                            type="file"
+                            accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                            onChange={handleFileInputChange}
+                            className="hidden"
+                          />
+                        </label>
+                        <Button
+                          onClick={() => {
+                            setEditingPickupPoint(null);
+                            setIsPickupPointDialogOpen(true);
+                          }}
+                          size="sm"
+                        >
+                          <Plus className="w-4 h-4 mr-2" />
+                          Agregar Punto
+                        </Button>
+                      </div>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <PickupPointsList 
+                      points={pickupPoints} 
+                      onRemove={handleRemovePickupPoint}
+                      onPointClick={(point) => setFocusedPoint(point)}
+                      onEdit={handleEditPickupPoint}
+                    />
+                  </CardContent>
+                </Card>
               </TabsContent>
               <TabsContent value="vehicles" className="mt-0">
                 <VehicleConfig 
@@ -1444,6 +1645,8 @@ const Index = () => {
                   vehicles={vehicles}
                   onMapClickMode={handleVehicleLocationMapClick}
                   onLocationUpdate={handleVehicleLocationUpdate}
+                  isDialogOpen={isVehicleDialogOpen}
+                  setIsDialogOpen={setIsVehicleDialogOpen}
                 />
               </TabsContent>
             </Tabs>
@@ -1455,6 +1658,19 @@ const Index = () => {
                 <Map 
                   pickupPoints={pickupPoints} 
                   routes={routes} 
+                  vehicles={vehicles}
+                  visibleRoutes={visibleRoutes}
+                  onRouteVisibilityChange={(routeIndex, visible) => {
+                    setVisibleRoutes(prev => {
+                      const newSet = new Set(prev);
+                      if (visible) {
+                        newSet.add(routeIndex);
+                      } else {
+                        newSet.delete(routeIndex);
+                      }
+                      return newSet;
+                    });
+                  }}
                   onMapClick={handleMapClick}
                   clickMode={clickMode || vehicleLocationMode !== null}
                   focusedPoint={focusedPoint}
@@ -1464,6 +1680,88 @@ const Index = () => {
                 />
               </CardContent>
             </Card>
+            
+            {/* Selected Optimization Info Overlay */}
+            {selectedRunId && selectedRunData && (
+              <Card className="absolute top-4 left-4 z-20 shadow-lg max-w-sm">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center justify-between text-base">
+                    <span className="flex items-center gap-2">
+                      <History className="w-4 h-4" />
+                      Optimización Seleccionada
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={() => {
+                        setSelectedRunId(null);
+                        setSelectedRunData(null);
+                        setRoutes([]);
+                        setVisibleRoutes(new Set());
+                        supabase
+                          .from("routes")
+                          .delete()
+                          .gte("created_at", "1970-01-01");
+                      }}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div>
+                    <p className="text-muted-foreground text-xs">ID de Ejecución</p>
+                    <p className="font-mono text-xs">{selectedRunId}</p>
+                  </div>
+                  {(selectedRunData.metadata?.created_at || selectedRunData.created_at) && (
+                    <div>
+                      <p className="text-muted-foreground text-xs">Fecha</p>
+                      <p className="text-xs">
+                        {new Date(selectedRunData.metadata?.created_at || selectedRunData.created_at).toLocaleString('es-ES', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </p>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t">
+                    <div>
+                      <p className="text-muted-foreground text-xs">Vehículos</p>
+                      <p className="text-lg font-bold">
+                        {selectedRunData.output?.solutions?.[0]?.vehicles?.length || 
+                         selectedRunData.solutions?.[0]?.vehicles?.length || 
+                         routes.length || 0}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-muted-foreground text-xs">Rutas</p>
+                      <p className="text-lg font-bold">{routes.length}</p>
+                    </div>
+                  </div>
+                  {(selectedRunData.metadata?.status || selectedRunData.status) && (
+                    <div className="pt-2 border-t">
+                      <p className="text-muted-foreground text-xs">Estado</p>
+                      <p className="text-xs">
+                        {(() => {
+                          const status = selectedRunData.metadata?.status || selectedRunData.status;
+                          return status === "succeeded" ? "✓ Completado" :
+                                 status === "failed" ? "✗ Fallido" :
+                                 status === "error" ? "✗ Error" :
+                                 status === "running" ? "⟳ Ejecutando" :
+                                 status === "queued" ? "⏳ En cola" :
+                                 status;
+                        })()}
+                      </p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+            
             <Button
               onClick={() => setClickMode(!clickMode)}
               variant={clickMode ? "default" : "outline"}
@@ -1476,6 +1774,116 @@ const Index = () => {
           </div>
         </div>
       </main>
+
+      {/* Pickup Point Form Dialog */}
+      <Dialog open={isPickupPointDialogOpen} onOpenChange={setIsPickupPointDialogOpen}>
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingPickupPoint ? "Editar Punto de Recogida" : "Agregar Punto de Recogida"}
+            </DialogTitle>
+          </DialogHeader>
+          <PickupPointForm 
+            onAdd={handleAddPickupPoint} 
+            editingPoint={editingPickupPoint}
+            onCancelEdit={handleCancelEditPickupPoint}
+          />
+        </DialogContent>
+      </Dialog>
+
+      {/* Previous Optimizations Dialog */}
+      <Dialog open={isPreviousRunsDialogOpen} onOpenChange={setIsPreviousRunsDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <History className="w-5 h-5" />
+                Ejecuciones Anteriores
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  onClick={loadRuns}
+                  variant="outline"
+                  size="sm"
+                  disabled={isLoadingRuns}
+                >
+                  {isLoadingRuns ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    "Actualizar"
+                  )}
+                </Button>
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            {isLoadingRuns ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : runs.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                No hay ejecuciones disponibles
+              </p>
+            ) : (
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                {runs.map((run) => {
+                  const runId = run.id || run.run_id;
+                  const status = run.metadata?.status || run.status || "unknown";
+                  const createdAt = run.metadata?.created_at || run.created_at || "";
+                  const isSelected = selectedRunId === runId;
+                  
+                  // Format status for display
+                  const statusDisplay = status === "succeeded" ? "✓ Completado" :
+                                       status === "failed" ? "✗ Fallido" :
+                                       status === "error" ? "✗ Error" :
+                                       status === "running" ? "⟳ Ejecutando" :
+                                       status === "queued" ? "⏳ En cola" :
+                                       status;
+                  
+                  return (
+                    <Card
+                      key={runId}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected
+                          ? "bg-primary text-primary-foreground"
+                          : "hover:bg-muted"
+                      }`}
+                      onClick={() => {
+                        handleRunSelect(runId);
+                        setIsPreviousRunsDialogOpen(false);
+                      }}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <p className="font-semibold text-sm">ID: {runId}</p>
+                            <p className="text-xs opacity-80 mt-1">
+                              {statusDisplay} | {createdAt ? new Date(createdAt).toLocaleString('es-ES', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              }) : "Fecha desconocida"}
+                            </p>
+                          </div>
+                          {isSelected && isOptimizing && (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          )}
+                          {isSelected && !isOptimizing && (
+                            <span className="text-xs">✓ Seleccionado</span>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
