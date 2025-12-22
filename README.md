@@ -1,5 +1,7 @@
 # Welcome to your Lovable project
 
+> **Deployment Status**: This project is configured for GitHub Pages deployment. Last updated for deployment testing.
+
 ## Project info
 
 **URL**: https://lovable.dev/projects/78f4098e-c2aa-43b9-96ba-83ac7bb596df
