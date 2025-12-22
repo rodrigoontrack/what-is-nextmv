@@ -42,6 +42,7 @@ interface VehicleConfigProps {
   onAdd: (vehicle: Vehicle) => void;
   onUpdate?: (vehicleId: string, vehicle: Vehicle) => void;
   onDelete: (vehicleId: string) => void;
+  onDeleteAll?: () => void;
   vehicles: Vehicle[];
   onMapClickMode?: (mode: "start" | "end" | "start-selected" | "end-selected" | null, callback: (lon: number, lat: number) => void) => void;
   onLocationUpdate?: (type: "start" | "end", location: { lon: number; lat: number } | null) => void;
@@ -50,7 +51,7 @@ interface VehicleConfigProps {
   onVehicleExcelUpload?: (file: File) => void;
 }
 
-const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen, onVehicleExcelUpload }: VehicleConfigProps) => {
+const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen, onVehicleExcelUpload }: VehicleConfigProps) => {
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [name, setName] = useState("");
   const [capacity, setCapacity] = useState("100");
@@ -325,6 +326,38 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, vehicles, onMapClickMode, on
                     className="hidden"
                   />
                 </label>
+              )}
+              {onDeleteAll && vehicles.length > 0 && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      className="px-3 whitespace-nowrap flex-shrink-0 w-fit"
+                    >
+                      <Trash2 className="w-4 h-4 mr-1.5" />
+                      Eliminar Todos
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>¿Eliminar todos los vehículos?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        ¿Estás seguro de que deseas eliminar todos los {vehicles.length} vehículos? Esta acción no se puede deshacer.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={onDeleteAll}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        Eliminar Todos
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
               )}
               <Button
                 onClick={() => {

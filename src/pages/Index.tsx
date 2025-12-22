@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { supabase } from "@/integrations/supabase/client";
 import Map from "@/components/Map";
@@ -80,6 +82,7 @@ const Index = () => {
   const [isPreviousRunsDialogOpen, setIsPreviousRunsDialogOpen] = useState(false);
   const [isDeleteAllPointsDialogOpen, setIsDeleteAllPointsDialogOpen] = useState(false);
   const [visibleRoutes, setVisibleRoutes] = useState<Set<number>>(new Set());
+  const [generalStartTime, setGeneralStartTime] = useState<string>("08:00");
   const { toast } = useToast();
 
   // Helper function to get valid route count (routes with duration > 0, one per vehicle)
@@ -935,10 +938,30 @@ const Index = () => {
         return index > -1 ? stopId.substring(0, index) : stopId;
       };
 
+      // Helper function to calculate arrival time
+      const calculateArrivalTime = (startTime: string, durationMinutes: number): string => {
+        try {
+          const [hours, minutes] = startTime.split(':').map(Number);
+          const startDate = new Date();
+          startDate.setHours(hours, minutes, 0, 0);
+          
+          // Add duration in minutes
+          const arrivalDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+          
+          // Format as HH:MM
+          const arrivalHours = arrivalDate.getHours().toString().padStart(2, '0');
+          const arrivalMinutes = arrivalDate.getMinutes().toString().padStart(2, '0');
+          return `${arrivalHours}:${arrivalMinutes}`;
+        } catch (error) {
+          console.error("Error calculating arrival time:", error);
+          return "";
+        }
+      };
+
       // ===== ROUTES SHEET =====
       const routesData: any[] = [
         ["Solución", "Vehículo ID", "Placa", "Orden en Ruta", "Stop ID", "ID Persona", "Tipo", "Latitud", "Longitud", 
-         "Distancia Acumulada (km)", "Duración Acumulada (min)", "Distancia al Siguiente (km)", "Duración al Siguiente (min)"]
+         "Distancia Acumulada (km)", "Duración Acumulada (min)", "Hora de Llegada", "Distancia al Siguiente (km)", "Duración al Siguiente (min)"]
       ];
 
       solutions.forEach((solution: any, solutionIndex: number) => {
@@ -998,6 +1021,9 @@ const Index = () => {
             const nextDistanceNum = typeof nextDistance === 'string' ? (parseFloat(nextDistance) || 0) : (nextDistance || 0);
             const nextDurationNum = typeof nextDuration === 'string' ? (parseFloat(nextDuration) || 0) : (nextDuration || 0);
             
+            // Calculate arrival time based on general start time and accumulated duration
+            const arrivalTime = calculateArrivalTime(generalStartTime, accumulatedDuration / 60);
+            
             routesData.push([
               solutionIndex + 1,
               vehicle.id || "N/A",
@@ -1010,6 +1036,7 @@ const Index = () => {
               location.lon || "",
               (accumulatedDistance / 1000).toFixed(3),
               (accumulatedDuration / 60).toFixed(2),
+              arrivalTime,
               nextDistanceNum > 0 ? (nextDistanceNum / 1000).toFixed(3) : "",
               nextDurationNum > 0 ? (nextDurationNum / 60).toFixed(2) : "",
             ]);
@@ -1030,6 +1057,7 @@ const Index = () => {
             "",
             ((typeof vehicleDistance === 'string' ? parseFloat(vehicleDistance) : vehicleDistance) / 1000).toFixed(3),
             ((typeof vehicleDuration === 'string' ? parseFloat(vehicleDuration) : vehicleDuration) / 60).toFixed(2),
+            "", // Empty arrival time for summary row
             "",
             "",
           ]);
@@ -2263,6 +2291,50 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     });
   };
 
+  const handleDeleteAllVehicles = async () => {
+    if (vehicles.length === 0) {
+      toast({
+        title: "Info",
+        description: "No hay vehículos para eliminar",
+      });
+      return;
+    }
+
+    try {
+      // Delete all vehicles from Supabase
+      const { error } = await supabase
+        .from("vehicles")
+        .delete()
+        .neq("id", "00000000-0000-0000-0000-000000000000"); // Delete all
+
+      if (error) {
+        toast({
+          title: "Error",
+          description: "No se pudieron eliminar los vehículos",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Clear the state
+      setVehicles([]);
+      setRoutes([]);
+      setVisibleRoutes(new Set());
+
+      toast({
+        title: "Vehículos eliminados",
+        description: `Se eliminaron ${vehicles.length} vehículos exitosamente`,
+      });
+    } catch (error) {
+      console.error("Error deleting all vehicles:", error);
+      toast({
+        title: "Error",
+        description: `No se pudieron eliminar los vehículos: ${error instanceof Error ? error.message : "Error desconocido"}`,
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleOptimizeRoutes = async () => {
     if (pickupPoints.length < 2) {
       toast({
@@ -3167,6 +3239,25 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                 {vehicles.length === 0 && "Necesitas configurar al menos 1 vehículo."}
               </p>
             )}
+            {(pickupPoints.length >= 2 && vehicles.length > 0) && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <Label htmlFor="start-time" className="text-sm font-medium whitespace-nowrap">
+                    Hora de Inicio General:
+                  </Label>
+                  <Input
+                    id="start-time"
+                    type="time"
+                    value={generalStartTime}
+                    onChange={(e) => setGeneralStartTime(e.target.value)}
+                    className="w-32"
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    (Se usará para calcular las horas de llegada en el Excel)
+                  </span>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -3312,7 +3403,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                 <VehicleConfig 
                   onAdd={handleAddVehicle}
                   onUpdate={handleUpdateVehicle}
-                  onDelete={handleDeleteVehicle} 
+                  onDelete={handleDeleteVehicle}
+                  onDeleteAll={handleDeleteAllVehicles}
                   vehicles={vehicles}
                   onMapClickMode={handleVehicleLocationMapClick}
                   onLocationUpdate={handleVehicleLocationUpdate}

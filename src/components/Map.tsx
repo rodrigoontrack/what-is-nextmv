@@ -151,11 +151,21 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       console.warn("Could not clean up layers:", e);
     }
 
+    // Helper function to extract original point ID from encoded stop ID
+    // Format: {point.id}__person_{person_id} or just {point.id}
+    const extractOriginalPointId = (stopId: string): string => {
+      if (!stopId) return stopId;
+      const index = stopId.indexOf('__person_');
+      return index > -1 ? stopId.substring(0, index) : stopId;
+    };
+
     // Build a map of stop IDs to their order in routes (starting from 1, excluding start/end)
     // Use Object.create(null) to avoid Map constructor conflict with component name
     const stopOrderMap: Record<string, number> = {};
+    // Build a map of stop IDs to route indices for coloring markers
+    const stopToRouteIndexMap: Record<string, number> = {};
     if (routes.length > 0) {
-      routes.forEach((route: any) => {
+      routes.forEach((route: any, routeIndex: number) => {
         const vehicleRoute = route.route_data?.route || [];
         let orderNumber = 1; // Start counting from 1 for actual stops
         
@@ -163,9 +173,16 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
           const stopId = routeStop.stop?.id;
           // Skip start/end location markers, only count actual pickup points
           if (stopId && !stopId.includes("-start") && !stopId.includes("-end")) {
+            // Extract original point ID (in case stop ID is encoded with person_id)
+            const originalPointId = extractOriginalPointId(stopId);
+            
             // Use the minimum order if stop appears in multiple routes
-            if (!(stopId in stopOrderMap) || stopOrderMap[stopId] > orderNumber) {
-              stopOrderMap[stopId] = orderNumber;
+            if (!(originalPointId in stopOrderMap) || stopOrderMap[originalPointId] > orderNumber) {
+              stopOrderMap[originalPointId] = orderNumber;
+            }
+            // Map stop ID to route index (use first route found if stop appears in multiple routes)
+            if (!(originalPointId in stopToRouteIndexMap)) {
+              stopToRouteIndexMap[originalPointId] = routeIndex;
             }
             orderNumber++; // Increment for next stop
           }
@@ -213,11 +230,37 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       markersRef.current.push(endMarker);
     }
 
-    // Add pickup point markers with order numbers
+    // Color palette for different vehicles (must match the one used for routes)
+    const routeColors = [
+      "#26bc30", // Green
+      "#3b82f6", // Blue
+      "#f59e0b", // Amber
+      "#ef4444", // Red
+      "#8b5cf6", // Purple
+      "#ec4899", // Pink
+      "#06b6d4", // Cyan
+      "#84cc16", // Lime
+    ];
+
+    // Add pickup point markers with order numbers and route colors
     pickupPoints.forEach((point) => {
       const orderNumber = stopOrderMap[point.id];
+      const routeIndex = stopToRouteIndexMap[point.id];
       const el = document.createElement("div");
-      el.className = "w-10 h-10 bg-primary rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white font-bold text-sm";
+      
+      // Determine marker color: use route color if point belongs to a route, otherwise use primary color
+      const markerColor = routeIndex !== undefined ? routeColors[routeIndex % routeColors.length] : undefined;
+      
+      // Set base classes
+      el.className = "w-10 h-10 rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white font-bold text-sm";
+      
+      // Set background color: use inline style for route colors, or default to primary
+      if (markerColor) {
+        el.style.backgroundColor = markerColor;
+      } else {
+        // Use Tailwind's primary color class as fallback
+        el.classList.add("bg-primary");
+      }
       
       if (orderNumber !== undefined) {
         el.textContent = String(orderNumber);
