@@ -3128,7 +3128,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     <div className="min-h-screen bg-background">
       <header className="bg-primary text-primary-foreground p-4 shadow-md">
         <div className="container mx-auto flex items-center gap-2">
-          <img src="/logo.png" alt="Logo" className="h-8 w-auto object-contain" />
+          <img src="https://ontrack-global.s3.us-west-2.amazonaws.com/images/logo.png" alt="Logo" className="h-8 w-auto object-contain" />
         </div>
       </header>
 
