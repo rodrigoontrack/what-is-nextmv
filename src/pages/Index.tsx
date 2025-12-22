@@ -85,6 +85,25 @@ const Index = () => {
   const [generalStartTime, setGeneralStartTime] = useState<string>("08:00");
   const { toast } = useToast();
 
+  // Helper function to get the Nextmv API URL (uses proxy in dev, Supabase function in production)
+  const getNextmvApiUrl = (apiPath: string): string => {
+    // Remove leading slash if present
+    const cleanPath = apiPath.startsWith("/") ? apiPath.slice(1) : apiPath;
+    
+    if (import.meta.env.DEV) {
+      // Use Vite proxy in development
+      return `/api/nextmv/${cleanPath}`;
+    } else {
+      // Use Supabase Edge Function proxy in production
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      if (supabaseUrl) {
+        return `${supabaseUrl}/functions/v1/nextmv-proxy/${cleanPath}`;
+      }
+      // Fallback to direct URL (will fail with CORS, but better than nothing)
+      return `https://api.cloud.nextmv.io/${cleanPath}`;
+    }
+  };
+
   // Helper function to get valid route count (routes with duration > 0, one per vehicle)
   const getValidRouteCount = useMemo(() => {
     // Filter routes: only count routes with duration > 0
@@ -121,15 +140,19 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      const runsUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
-      const runsApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs` : runsUrl;
+      const runsApiUrl = getNextmvApiUrl(`v1/applications/${NEXTMV_APPLICATION_ID}/runs`);
       
       const response = await fetch(runsApiUrl, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
+          ...(import.meta.env.DEV ? {
+            "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          } : {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          }),
         },
       });
       
@@ -171,15 +194,19 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-      const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
+      const runApiUrl = getNextmvApiUrl(`v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`);
       
       const response = await fetch(runApiUrl, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
+          ...(import.meta.env.DEV ? {
+            "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          } : {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+          }),
         },
       });
       
@@ -2550,13 +2577,13 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
 
       // Store the JSON and endpoint to display (use cleaned version)
       setNextmvJson(cleanPayload);
-      const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
-      const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Use proxy in development
-      const nextmvFullUrl = "https://api.cloud.nextmv.io" + nextmvPath; // Full URL for display
+      const nextmvPath = "v1/applications/workspace-dgxjzzgctd/runs";
+      const nextmvFullUrl = "https://api.cloud.nextmv.io/" + nextmvPath; // Full URL for display
+      const nextmvApiUrl = getNextmvApiUrl(nextmvPath);
       setNextmvEndpoint(nextmvFullUrl);
       
       console.log("Calling Nextmv API:", {
-        endpoint: nextmvEndpoint,
+        endpoint: nextmvApiUrl,
         fullUrl: nextmvFullUrl,
         pickupPointsCount: pickupPoints.length,
         vehiclesCount: vehicles.length,
@@ -2581,8 +2608,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         }, 30000);
         
         try {
-          // Use proxy endpoint in development, direct URL in production (if CORS allows)
-          const apiUrl = import.meta.env.DEV ? nextmvEndpoint : nextmvFullUrl;
+          // Use proxy endpoint (works in both dev and production)
+          const apiUrl = nextmvApiUrl;
           
           // Convert to JSON string for the request
           const requestBodyString = JSON.stringify(cleanPayload);
@@ -2606,9 +2633,14 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           response = await fetch(apiUrl, {
             method: "POST",
             headers: {
-              "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-              "Content-Type": "application/json",
-              "Accept": "application/json",
+              ...(import.meta.env.DEV ? {
+                "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+              } : {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+              }),
             },
             body: requestBodyString,
             signal: controller.signal
@@ -2853,8 +2885,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         
         // Build the GET URL for the run
         const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-        const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-        const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
+        const runApiUrl = getNextmvApiUrl(`v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`);
         
         // Poll for the result every 10 seconds until solution is available
         const pollInterval = 10000; // Poll every 10 seconds
@@ -2869,9 +2900,14 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             const runResponse = await fetch(runApiUrl, {
               method: "GET",
               headers: {
-                "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+                ...(import.meta.env.DEV ? {
+                  "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                } : {
+                  "Content-Type": "application/json",
+                  "Accept": "application/json",
+                }),
               },
             });
             
