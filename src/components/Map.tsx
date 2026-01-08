@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 
 interface PickupPoint {
   id: string;
@@ -39,11 +37,12 @@ interface MapProps {
   vehicleLocationMode?: "start" | "end" | null;
   vehicleStartLocation?: { lon: number; lat: number } | null;
   vehicleEndLocation?: { lon: number; lat: number } | null;
+  selectedRouteIndex?: number | null; // Index of the selected route to zoom to and highlight
 }
 
 const MAPBOX_TOKEN = "pk.eyJ1Ijoicm9kcmlnb2l2YW5mIiwiYSI6ImNtaHhoOHk4azAxNjcyanExb2E2dHl6OTMifQ.VO6hcKB-pIDvb8ZFFpLdfw";
 
-const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation }: MapProps) => {
+const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex }: MapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -243,9 +242,18 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
     ];
 
     // Add pickup point markers with order numbers and route colors
+    // Filter markers: if selectedRouteIndex is set, only show markers from that route
     pickupPoints.forEach((point) => {
       const orderNumber = stopOrderMap[point.id];
       const routeIndex = stopToRouteIndexMap[point.id];
+      
+      // Filter: if a route is selected, only show markers from that route
+      if (selectedRouteIndex !== null && selectedRouteIndex !== undefined) {
+        if (routeIndex !== selectedRouteIndex) {
+          return; // Skip markers from other routes
+        }
+      }
+      
       const el = document.createElement("div");
       
       // Determine marker color: use route color if point belongs to a route, otherwise use primary color
@@ -379,6 +387,26 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       
       console.log(`Drawing ${vehicleRoutes.length} routes on map (matching legend)`);
 
+      // Helper function to clean and validate coordinates
+      const cleanCoordinates = (coords: number[][]): number[][] => {
+        return coords.filter((coord, index, arr) => {
+          // Validate coordinate is an array with 2 valid numbers
+          if (!Array.isArray(coord) || coord.length < 2) return false;
+          const [lon, lat] = coord;
+          if (typeof lon !== 'number' || typeof lat !== 'number') return false;
+          if (!isFinite(lon) || !isFinite(lat)) return false;
+          if (Math.abs(lon) > 180 || Math.abs(lat) > 90) return false;
+          
+          // Remove duplicate consecutive points
+          if (index > 0) {
+            const [prevLon, prevLat] = arr[index - 1];
+            if (prevLon === lon && prevLat === lat) return false;
+          }
+          
+          return true;
+        });
+      };
+
       // Draw route lines using Mapbox Directions API to get actual street routes
       // Use async function to handle API calls
       (async () => {
@@ -396,113 +424,160 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
             console.warn(`Route ${originalIndex} has only ${coordinates.length} waypoint(s), using straight line`);
             // Don't return - create a straight line instead
           } else {
-            // Build waypoints for Directions API (format: lon,lat;lon,lat;...)
-            const waypoints = coordinates.map(coord => `${coord[0]},${coord[1]}`).join(';');
+            // Mapbox has a limit of 25 waypoints per request
+            const MAX_WAYPOINTS = 25;
+            let combinedGeometry: any = null;
             
-            // Fetch route from Mapbox Directions API
-            const directionsUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${waypoints}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
-            
-            console.log(`Fetching Mapbox route for vehicle ${originalIndex} with ${coordinates.length} waypoints`);
-            
-            const response = await fetch(directionsUrl);
-            const data = await response.json();
-            
-            if (data.code !== 'Ok') {
-              console.warn(`Mapbox Directions API error for route ${originalIndex}:`, data.code, data.message || data);
-              // Don't return - fall through to straight line fallback
-            } else if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-          
-              // Get the route geometry (actual street path)
-              const routeGeometry = data.routes[0].geometry;
+            if (coordinates.length <= MAX_WAYPOINTS) {
+              // Single request for routes with 25 or fewer waypoints
+              const waypoints = coordinates.map(coord => `${coord[0]},${coord[1]}`).join(';');
+              const directionsUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${waypoints}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
               
-              console.log(`Successfully fetched Mapbox route for vehicle ${originalIndex}, geometry has ${routeGeometry.coordinates?.length || 0} coordinates`);
+              console.log(`Fetching Mapbox route for vehicle ${originalIndex} with ${coordinates.length} waypoints`);
               
-              // Add or update route line with actual street geometry
-              if (map.current!.getSource(sourceId)) {
-                (map.current!.getSource(sourceId) as mapboxgl.GeoJSONSource).setData({
-                  type: "Feature",
-                  properties: {},
-                  geometry: routeGeometry,
-                });
+              const response = await fetch(directionsUrl);
+              const data = await response.json();
+              
+              if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                combinedGeometry = data.routes[0].geometry;
               } else {
-                map.current!.addSource(sourceId, {
-                  type: "geojson",
-                  data: {
+                console.warn(`Mapbox Directions API error for route ${originalIndex}:`, data.code, data.message || data);
+              }
+            } else {
+              // Split into multiple requests for routes with more than 25 waypoints
+              console.log(`Route ${originalIndex} has ${coordinates.length} waypoints, splitting into multiple requests (max ${MAX_WAYPOINTS} per request)`);
+              
+              const routeSegments: any[] = [];
+              
+              // Split coordinates into chunks of MAX_WAYPOINTS
+              // Each chunk (except the first) starts with the last point of the previous chunk for continuity
+              for (let i = 0; i < coordinates.length; i += MAX_WAYPOINTS - 1) {
+                const chunkStart = i === 0 ? i : i - 1; // Include last point from previous chunk
+                const chunkEnd = Math.min(i + MAX_WAYPOINTS, coordinates.length);
+                const chunk = coordinates.slice(chunkStart, chunkEnd);
+                
+                if (chunk.length < 2) continue; // Skip chunks with less than 2 points
+                
+                const waypoints = chunk.map(coord => `${coord[0]},${coord[1]}`).join(';');
+                const directionsUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${waypoints}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
+                
+                console.log(`Fetching segment ${Math.floor(i / (MAX_WAYPOINTS - 1)) + 1} for route ${originalIndex} with ${chunk.length} waypoints`);
+                
+                try {
+                  const response = await fetch(directionsUrl);
+                  const data = await response.json();
+                  
+                  if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+                    routeSegments.push(data.routes[0].geometry);
+                  } else {
+                    console.warn(`Mapbox Directions API error for route ${originalIndex} segment ${Math.floor(i / (MAX_WAYPOINTS - 1)) + 1}:`, data.code, data.message || data);
+                  }
+                } catch (error) {
+                  console.error(`Error fetching segment for route ${originalIndex}:`, error);
+                }
+              }
+              
+              // Combine all route segments into a single geometry
+              if (routeSegments.length > 0) {
+                const allCoordinates: number[][] = [];
+                
+                routeSegments.forEach((segment, segmentIndex) => {
+                  const segmentCoords = segment.coordinates || [];
+                  
+                  if (segmentIndex === 0) {
+                    // First segment: include all coordinates
+                    allCoordinates.push(...segmentCoords);
+                  } else {
+                    // Subsequent segments: skip first coordinate (duplicate of last from previous segment)
+                    if (segmentCoords.length > 1) {
+                      allCoordinates.push(...segmentCoords.slice(1));
+                    }
+                  }
+                });
+                
+                combinedGeometry = {
+                  type: "LineString",
+                  coordinates: allCoordinates,
+                };
+                
+                console.log(`Combined ${routeSegments.length} segments for route ${originalIndex} into geometry with ${allCoordinates.length} coordinates`);
+              } else {
+                console.warn(`Route ${originalIndex} failed to fetch any segments, using fallback`);
+              }
+            }
+            
+            // Process the combined geometry (from single or multiple requests)
+            if (combinedGeometry) {
+              // Clean and validate coordinates to prevent jumps
+              const cleanedCoords = cleanCoordinates(combinedGeometry.coordinates || []);
+              
+              // Ensure we have at least 2 valid coordinates
+              if (cleanedCoords.length < 2) {
+                console.warn(`Route ${originalIndex} has insufficient valid coordinates after cleaning, using fallback`);
+                // Fall through to straight line fallback
+              } else {
+                const cleanedGeometry = {
+                  ...combinedGeometry,
+                  coordinates: cleanedCoords,
+                };
+                
+                console.log(`Successfully processed Mapbox route for vehicle ${originalIndex}, geometry has ${cleanedCoords.length} valid coordinates`);
+                
+                // Add or update route line with actual street geometry
+                if (map.current!.getSource(sourceId)) {
+                  (map.current!.getSource(sourceId) as mapboxgl.GeoJSONSource).setData({
                     type: "Feature",
                     properties: {},
-                    geometry: routeGeometry,
-                  },
-                });
+                    geometry: cleanedGeometry,
+                  });
+                } else {
+                  map.current!.addSource(sourceId, {
+                    type: "geojson",
+                    data: {
+                      type: "Feature",
+                      properties: {},
+                      geometry: cleanedGeometry,
+                    },
+                  });
 
-                map.current!.addLayer({
-                  id: layerId,
-                  type: "line",
-                  source: sourceId,
-                  layout: {
-                    "line-join": "round",
-                    "line-cap": "round",
-                    "visibility": isInitiallyVisible ? "visible" : "none",
-                  },
-                  paint: {
-                    "line-color": routeColor,
-                    "line-width": 4,
-                  },
-                });
+                  map.current!.addLayer({
+                    id: layerId,
+                    type: "line",
+                    source: sourceId,
+                    layout: {
+                      "line-join": "round",
+                      "line-cap": "round",
+                      "visibility": isInitiallyVisible ? "visible" : "none",
+                    },
+                    paint: {
+                      "line-color": routeColor,
+                      "line-width": 4,
+                    },
+                  });
+                }
+                return; // Successfully created route, exit early
               }
-              return; // Successfully created route, exit early
+            } else {
+              console.warn(`Route ${originalIndex} failed to get geometry from Mapbox, using fallback`);
             }
           }
           
-             // Fallback to straight line if Directions API fails or has < 2 waypoints
-             console.log(`Using straight line fallback for vehicle ${originalIndex}`);
-            if (map.current!.getSource(sourceId)) {
-              (map.current!.getSource(sourceId) as mapboxgl.GeoJSONSource).setData({
-                type: "Feature",
-                properties: {},
-                geometry: {
-                  type: "LineString",
-                  coordinates: coordinates,
-                },
-              });
-            } else {
-              map.current!.addSource(sourceId, {
-                type: "geojson",
-                data: {
-                  type: "Feature",
-                  properties: {},
-                  geometry: {
-                    type: "LineString",
-                    coordinates: coordinates,
-                  },
-                },
-              });
-
-              map.current!.addLayer({
-                id: layerId,
-                type: "line",
-                source: sourceId,
-                layout: {
-                  "line-join": "round",
-                  "line-cap": "round",
-                  "visibility": isInitiallyVisible ? "visible" : "none",
-                },
-                paint: {
-                  "line-color": routeColor,
-                  "line-width": 4,
-                },
-              });
-            }
-             } catch (error) {
-               console.error(`Error fetching route for vehicle ${originalIndex}:`, error);
-               // Fallback to straight line on error - ensure route is still rendered
-               console.log(`Creating fallback straight line for vehicle ${originalIndex} due to error`);
+          // Fallback to straight line if Directions API fails or has < 2 waypoints
+          console.log(`Using straight line fallback for vehicle ${originalIndex}`);
+          // Clean coordinates before using them
+          const cleanedFallbackCoords = cleanCoordinates(coordinates);
+          if (cleanedFallbackCoords.length < 2) {
+            console.warn(`Route ${originalIndex} has insufficient valid coordinates for fallback line`);
+            return; // Skip this route if we don't have enough valid coordinates
+          }
+          
           if (map.current!.getSource(sourceId)) {
             (map.current!.getSource(sourceId) as mapboxgl.GeoJSONSource).setData({
               type: "Feature",
               properties: {},
               geometry: {
                 type: "LineString",
-                coordinates: coordinates,
+                coordinates: cleanedFallbackCoords,
               },
             });
           } else {
@@ -513,7 +588,55 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
                 properties: {},
                 geometry: {
                   type: "LineString",
-                  coordinates: coordinates,
+                  coordinates: cleanedFallbackCoords,
+                },
+              },
+            });
+
+            map.current!.addLayer({
+              id: layerId,
+              type: "line",
+              source: sourceId,
+              layout: {
+                "line-join": "round",
+                "line-cap": "round",
+                "visibility": isInitiallyVisible ? "visible" : "none",
+              },
+              paint: {
+                "line-color": routeColor,
+                "line-width": 4,
+              },
+            });
+          }
+        } catch (error) {
+          console.error(`Error fetching route for vehicle ${originalIndex}:`, error);
+          // Fallback to straight line on error - ensure route is still rendered
+          console.log(`Creating fallback straight line for vehicle ${originalIndex} due to error`);
+          // Clean coordinates before using them
+          const cleanedErrorCoords = cleanCoordinates(coordinates);
+          if (cleanedErrorCoords.length < 2) {
+            console.warn(`Route ${originalIndex} has insufficient valid coordinates for error fallback line`);
+            return; // Skip this route if we don't have enough valid coordinates
+          }
+          
+          if (map.current!.getSource(sourceId)) {
+            (map.current!.getSource(sourceId) as mapboxgl.GeoJSONSource).setData({
+              type: "Feature",
+              properties: {},
+              geometry: {
+                type: "LineString",
+                coordinates: cleanedErrorCoords,
+              },
+            });
+          } else {
+            map.current!.addSource(sourceId, {
+              type: "geojson",
+              data: {
+                type: "Feature",
+                properties: {},
+                geometry: {
+                  type: "LineString",
+                  coordinates: cleanedErrorCoords,
                 },
               },
             });
@@ -542,16 +665,16 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
 
     }
 
-    // Fit map to show all points (only if no point is focused)
-    if (pickupPoints.length > 0 && !focusedPoint) {
+    // Fit map to show all points (only if no point is focused and no route is selected)
+    if (pickupPoints.length > 0 && !focusedPoint && (selectedRouteIndex === null || selectedRouteIndex === undefined)) {
       const bounds = new mapboxgl.LngLatBounds();
       pickupPoints.forEach((point) => {
         bounds.extend([point.longitude, point.latitude]);
       });
       map.current!.fitBounds(bounds, { padding: 50 });
     }
-    // NOTE: visibleRoutes is intentionally NOT in dependencies - we only update visibility via the separate useEffect below
-  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation]);
+    // NOTE: visibleRoutes and selectedRouteIndex are intentionally NOT in dependencies - we only update visibility/zoom via separate useEffects below
+  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex]);
 
   // Update route visibility when visibleRoutes changes (separate from route drawing to avoid redrawing)
   useEffect(() => {
@@ -588,6 +711,101 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       duration: 1000,
     });
   }, [focusedPoint, mapLoaded]);
+
+  // Zoom to selected route when selectedRouteIndex changes
+  useEffect(() => {
+    if (!map.current || !mapLoaded || selectedRouteIndex === null || selectedRouteIndex === undefined || routes.length === 0) return;
+
+    const selectedRoute = routes[selectedRouteIndex];
+    if (!selectedRoute || !selectedRoute.route_data?.route) {
+      console.warn("Selected route not found or has no route_data:", selectedRouteIndex, selectedRoute);
+      return;
+    }
+
+    // Wait a bit for the route to be drawn, then calculate bounds
+    const zoomToRoute = () => {
+      if (!map.current) return;
+
+      const bounds = new mapboxgl.LngLatBounds();
+      let hasValidBounds = false;
+
+      // Collect all coordinates from the selected route stops
+      const vehicleRoute = selectedRoute.route_data.route || [];
+      
+      vehicleRoute.forEach((routeStop: any) => {
+        if (routeStop.stop?.location?.lon && routeStop.stop?.location?.lat) {
+          const lon = Number(routeStop.stop.location.lon);
+          const lat = Number(routeStop.stop.location.lat);
+          if (isFinite(lon) && isFinite(lat)) {
+            bounds.extend([lon, lat]);
+            hasValidBounds = true;
+          }
+        }
+      });
+
+      // Also try to get coordinates from the route polyline if available
+      const sourceId = `route-${selectedRouteIndex}`;
+      try {
+        if (map.current.getSource(sourceId)) {
+          const source = map.current.getSource(sourceId) as mapboxgl.GeoJSONSource;
+          // Use getData() method which is the proper way to get source data
+          const sourceData = source.getData() as any;
+          if (sourceData && sourceData.geometry && sourceData.geometry.coordinates) {
+            const coords = sourceData.geometry.coordinates;
+            if (Array.isArray(coords)) {
+              coords.forEach((coord: number[]) => {
+                if (Array.isArray(coord) && coord.length >= 2) {
+                  const lon = Number(coord[0]);
+                  const lat = Number(coord[1]);
+                  if (isFinite(lon) && isFinite(lat)) {
+                    bounds.extend([lon, lat]);
+                    hasValidBounds = true;
+                  }
+                }
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Could not get route polyline coordinates for zoom:", e);
+      }
+
+      if (hasValidBounds) {
+        try {
+          // Ensure bounds are valid
+          const sw = bounds.getSouthWest();
+          const ne = bounds.getNorthEast();
+          
+          if (sw && ne && sw.lng !== ne.lng && sw.lat !== ne.lat) {
+            console.log("Zooming to route", selectedRouteIndex, "bounds:", { sw, ne });
+            map.current.fitBounds(bounds, {
+              padding: { top: 50, bottom: 50, left: 50, right: 50 },
+            });
+          } else {
+            console.warn("Invalid bounds for route", selectedRouteIndex, { sw, ne });
+          }
+        } catch (e) {
+          console.error("Error zooming to route:", e, bounds);
+        }
+      } else {
+        console.warn("No valid bounds found for route", selectedRouteIndex, "route data:", selectedRoute);
+      }
+    };
+
+    // Try immediately, then retry after delays in case the route is still being drawn
+    zoomToRoute();
+    const timeoutId1 = setTimeout(() => {
+      zoomToRoute();
+    }, 300);
+    const timeoutId2 = setTimeout(() => {
+      zoomToRoute();
+    }, 1000);
+
+    return () => {
+      clearTimeout(timeoutId1);
+      clearTimeout(timeoutId2);
+    };
+  }, [selectedRouteIndex, mapLoaded, routes]);
 
   // Update cursor when clickMode changes
   useEffect(() => {
@@ -636,152 +854,6 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
           <p className="text-sm font-semibold">Haz clic en el mapa para agregar un punto de recogida</p>
         </div>
       )}
-      {routes.length > 0 && (() => {
-        // Filter routes to only show those with valid polylines AND at least one actual stop (excluding start/end)
-        const routesWithPolylines = routes.map((route: any, index: number) => {
-          const vehicleRoute = route.route_data?.route || [];
-          const hasValidCoordinates = vehicleRoute.some((routeStop: any) => 
-            routeStop.stop?.location?.lon && routeStop.stop?.location?.lat
-          );
-          // Count only actual stops (excluding start/end locations)
-          const actualStopCount = vehicleRoute.filter((routeStop: any) => {
-            const stopId = routeStop.stop?.id;
-            const hasLocation = routeStop.stop?.location?.lon && routeStop.stop?.location?.lat;
-            // Exclude start/end stops - only count actual pickup/delivery stops
-            const isActualStop = stopId && !stopId.includes("-start") && !stopId.includes("-end");
-            return hasLocation && isActualStop;
-          }).length;
-          // Require at least 1 actual stop (apart from start/end)
-          const hasActualStops = actualStopCount >= 1;
-          return (hasValidCoordinates && hasActualStops) ? { route, index } : null;
-        }).filter((item): item is { route: any; index: number } => item !== null);
-
-        // Group by vehicle and keep only one route per vehicle
-        // Use a Map to track the first occurrence of each vehicle
-        // Use globalThis.Map to avoid conflict with component name
-        const MapConstructor = globalThis.Map || window.Map;
-        const vehicleRouteMap = new MapConstructor<string, { route: any; index: number }>();
-        routesWithPolylines.forEach(({ route, index }) => {
-          // Get vehicle identifier - prefer vehicle_id, then route_data.id, fallback to index-based ID
-          let vehicleId = route.vehicle_id || route.route_data?.id || null;
-          
-          // If vehicle_id is null, create a stable identifier based on route data
-          // Use the first stop's ID or route index as fallback
-          if (!vehicleId && route.route_data?.route && route.route_data.route.length > 0) {
-            const firstStopId = route.route_data.route[0]?.stop?.id;
-            vehicleId = firstStopId || `route-${index}`;
-          }
-          
-          // Use "null-route-{index}" as final fallback to ensure uniqueness
-          const identifier = vehicleId || `null-route-${index}`;
-          
-          // Only keep the first route for each vehicle
-          if (!vehicleRouteMap.has(identifier)) {
-            vehicleRouteMap.set(identifier, { route, index });
-          }
-        });
-        
-        // Convert map values to array
-        const uniqueVehicleRoutes = Array.from(vehicleRouteMap.values());
-
-        if (uniqueVehicleRoutes.length === 0) return null;
-
-        return (
-          <Card className="absolute bottom-4 left-4 z-20 shadow-lg max-w-xs">
-            <CardHeader className="pb-2 pt-3 px-3">
-              <CardTitle className="text-sm">Leyenda de Rutas</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 text-xs px-3 pb-3">
-              <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
-                {(() => {
-                  // Color palette for different vehicles
-                  const routeColors = [
-                    "#26bc30", // Green
-                    "#3b82f6", // Blue
-                    "#f59e0b", // Amber
-                    "#ef4444", // Red
-                    "#8b5cf6", // Purple
-                    "#ec4899", // Pink
-                    "#06b6d4", // Cyan
-                    "#84cc16", // Lime
-                  ];
-                  return uniqueVehicleRoutes.map(({ route, index }) => {
-                    const color = routeColors[index % routeColors.length];
-                    const vehicleName = getVehicleName(index, route);
-                    const isVisible = !visibleRoutes || visibleRoutes.has(index);
-                    return (
-                      <div key={index} className="flex items-center gap-1.5">
-                        <Checkbox
-                          checked={isVisible}
-                          onCheckedChange={(checked) => {
-                            console.log(`Checkbox clicked for route index ${index}, checked: ${checked}`);
-                            if (onRouteVisibilityChange) {
-                              onRouteVisibilityChange(index, checked === true);
-                            }
-                          }}
-                          id={`route-${index}`}
-                          className="h-3.5 w-3.5"
-                        />
-                        <label
-                          htmlFor={`route-${index}`}
-                          className="flex items-center gap-1.5 flex-1 cursor-pointer"
-                        >
-                          <div
-                            className="w-3 h-3 rounded-sm flex-shrink-0"
-                            style={{ backgroundColor: color }}
-                          />
-                          <span className="truncate text-xs">{vehicleName}</span>
-                        </label>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
-              {/* Person Assignments Section */}
-              {uniqueVehicleRoutes.some(({ route }) => route.person_assignments && route.person_assignments.length > 0) && (
-                <div className="pt-2 border-t mt-2">
-                  <p className="text-xs font-semibold mb-1 text-muted-foreground">Asignaciones de Personas:</p>
-                  <div className="space-y-1 max-h-24 overflow-y-auto">
-                    {(() => {
-                      // Color palette for different vehicles
-                      const routeColors = [
-                        "#26bc30", // Green
-                        "#3b82f6", // Blue
-                        "#f59e0b", // Amber
-                        "#ef4444", // Red
-                        "#8b5cf6", // Purple
-                        "#ec4899", // Pink
-                        "#06b6d4", // Cyan
-                        "#84cc16", // Lime
-                      ];
-                      return uniqueVehicleRoutes.map(({ route, index }) => {
-                        const personAssignments = route.person_assignments;
-                        if (!personAssignments || personAssignments.length === 0) return null;
-                        const color = routeColors[index % routeColors.length];
-                        const vehicleName = getVehicleName(index, route);
-                        return (
-                          <div key={index} className="text-xs">
-                            <div className="flex items-center gap-1 mb-1">
-                              <div
-                                className="w-3 h-3 rounded-sm flex-shrink-0"
-                                style={{ backgroundColor: color }}
-                              />
-                              <span className="font-semibold">{vehicleName}:</span>
-                            </div>
-                            <div className="pl-4 text-muted-foreground">
-                              {personAssignments.join(", ")}
-                            </div>
-                          </div>
-                        );
-                      });
-                    })()}
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        );
-      })()}
     </div>
   );
 };

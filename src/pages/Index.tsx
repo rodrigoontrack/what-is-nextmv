@@ -7,17 +7,25 @@ import Map from "@/components/Map";
 import PickupPointForm from "@/components/PickupPointForm";
 import VehicleConfig from "@/components/VehicleConfig";
 import PickupPointsList from "@/components/PickupPointsList";
-import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download } from "lucide-react";
+import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Settings, Menu } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Loader2 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -80,6 +88,8 @@ const Index = () => {
   const [isPreviousRunsDialogOpen, setIsPreviousRunsDialogOpen] = useState(false);
   const [isDeleteAllPointsDialogOpen, setIsDeleteAllPointsDialogOpen] = useState(false);
   const [visibleRoutes, setVisibleRoutes] = useState<Set<number>>(new Set());
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [selectedRouteIndex, setSelectedRouteIndex] = useState<number | null>(null);
   const { toast } = useToast();
 
   // Helper function to get valid route count (routes with duration > 0, one per vehicle)
@@ -3055,75 +3065,140 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
   return (
     <div className="min-h-screen bg-background">
       <header className="bg-primary text-primary-foreground p-4 shadow-md">
-        <div className="container mx-auto flex items-center gap-2">
+        <div className="w-full px-4 flex items-center gap-2">
           <img src="/logo.png" alt="Logo" className="h-8 w-auto object-contain" />
         </div>
       </header>
 
-      <main className="container mx-auto p-4">
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-6">
-          <Card className="bg-primary text-primary-foreground">
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div className="flex-1">
-                  <p className="text-sm opacity-90">Puntos de Recogida</p>
-                  <p className="text-4xl font-bold">{pickupPoints.length}</p>
-                </div>
-                <div className="flex flex-col items-end gap-2">
-                <MapPin className="w-12 h-12 opacity-80" />
-                </div>
+      {/* Settings Button - Fixed on the left */}
+      <Sheet open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+        <SheetTrigger asChild>
+          <Button 
+            variant="default" 
+            size="icon" 
+            className="fixed left-4 top-20 z-50 shadow-lg h-12 w-12 rounded-full"
+          >
+            <Settings className="h-5 w-5" />
+          </Button>
+        </SheetTrigger>
+            <SheetContent side="left" className="w-[600px] sm:w-[700px] overflow-y-auto">
+              <SheetHeader>
+                <SheetTitle>Configuración</SheetTitle>
+              </SheetHeader>
+              <div className="mt-6">
+                <Tabs defaultValue="pickup-points" className="w-full">
+                  <TabsList className="grid w-full grid-cols-2 mb-4">
+                    <TabsTrigger value="pickup-points" className="flex items-center gap-2">
+                      <MapPin className="w-4 h-4" />
+                      Puntos de Recogida
+                    </TabsTrigger>
+                    <TabsTrigger value="vehicles" className="flex items-center gap-2">
+                      <Truck className="w-4 h-4" />
+                      Vehículos
+                    </TabsTrigger>
+                  </TabsList>
+                  <TabsContent value="pickup-points" className="space-y-6 mt-0">
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                          <MapPin className="w-5 h-5" />
+                          Puntos de Recogida
+                        </CardTitle>
+                        <div className="flex flex-col gap-2 overflow-hidden" style={{ marginTop: '32px' }}>
+                          <div className="flex gap-2 flex-wrap">
+                            <label htmlFor="excel-upload" className="cursor-pointer flex-shrink-0">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="cursor-pointer px-3 whitespace-nowrap"
+                                onClick={() => document.getElementById("excel-upload")?.click()}
+                              >
+                                <Upload className="w-4 h-4 mr-1.5" />
+                                Subir Excel
+                              </Button>
+                              <input
+                                id="excel-upload"
+                                type="file"
+                                accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                                onChange={handleFileInputChange}
+                                className="hidden"
+                              />
+                            </label>
+                            <Button
+                              onClick={() => {
+                                setEditingPickupPoint(null);
+                                setIsPickupPointDialogOpen(true);
+                              }}
+                              size="sm"
+                              className="px-3 whitespace-nowrap flex-shrink-0"
+                            >
+                              <Plus className="w-4 h-4 mr-1.5" />
+                              Agregar Punto
+                            </Button>
+                          </div>
+                          {pickupPoints.length > 0 && (
+                            <AlertDialog open={isDeleteAllPointsDialogOpen} onOpenChange={setIsDeleteAllPointsDialogOpen}>
+                              <AlertDialogTrigger asChild>
+                                <Button
+                                  variant="destructive"
+                                  size="sm"
+                                  className="px-3 whitespace-nowrap flex-shrink-0 w-fit"
+                                >
+                                  <Trash2 className="w-4 h-4 mr-1.5" />
+                                  Eliminar Todos
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>¿Eliminar todos los puntos?</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    ¿Estás seguro de que deseas eliminar todos los {pickupPoints.length} puntos de recogida? Esta acción no se puede deshacer.
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                                  <AlertDialogAction
+                                    onClick={handleDeleteAllPickupPoints}
+                                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                                  >
+                                    Eliminar Todos
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          )}
+                        </div>
+                      </CardHeader>
+                      <CardContent>
+                        <PickupPointsList 
+                          points={pickupPoints} 
+                          onRemove={handleRemovePickupPoint}
+                          onPointClick={(point) => setFocusedPoint(point)}
+                          onEdit={handleEditPickupPoint}
+                        />
+                      </CardContent>
+                    </Card>
+                  </TabsContent>
+                  <TabsContent value="vehicles" className="mt-0">
+                    <VehicleConfig 
+                      onAdd={handleAddVehicle}
+                      onUpdate={handleUpdateVehicle}
+                      onDelete={handleDeleteVehicle} 
+                      vehicles={vehicles}
+                      onMapClickMode={handleVehicleLocationMapClick}
+                      onLocationUpdate={handleVehicleLocationUpdate}
+                      isDialogOpen={isVehicleDialogOpen}
+                      setIsDialogOpen={setIsVehicleDialogOpen}
+                      onVehicleExcelUpload={handleVehicleExcelUpload}
+                    />
+                  </TabsContent>
+                </Tabs>
               </div>
-            </CardContent>
-          </Card>
+            </SheetContent>
+          </Sheet>
 
-          <Card className="bg-secondary text-secondary-foreground">
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm opacity-90">Vehículos</p>
-                  <p className="text-4xl font-bold">{vehicles.length}</p>
-                </div>
-                <Truck className="w-12 h-12 opacity-80" />
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="bg-accent text-accent-foreground">
-            <CardContent className="pt-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm opacity-90">Rutas Generadas</p>
-                  <p className="text-4xl font-bold">
-                    {(() => {
-                      // Filter routes: only count routes with duration > 0 and one route per vehicle
-                      const validRoutes = routes.filter(route => {
-                        const duration = route.route_data?.route_travel_duration || route.route_data?.route_duration || route.total_duration || 0;
-                        return duration > 0;
-                      });
-                      
-                      // Group by vehicle_id and keep only one route per vehicle
-                      const seenVehicles = new Set<string | null>();
-                      const uniqueRoutes = validRoutes.filter(route => {
-                        const vehicleId = route.vehicle_id || route.route_data?.id || null;
-                        if (vehicleId && seenVehicles.has(vehicleId)) {
-                          return false;
-                        }
-                        if (vehicleId) {
-                          seenVehicles.add(vehicleId);
-                        }
-                        return true;
-                      });
-                      
-                      return uniqueRoutes.length;
-                    })()}
-                  </p>
-                </div>
-                <Route className="w-12 h-12 opacity-80" />
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
+      <main className="w-full pl-4 pt-4 pb-4 pr-0">
         {/* Optimization Controls */}
         <Card className="mb-6">
           <CardHeader>
@@ -3212,121 +3287,440 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           </Card>
         )} */}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="space-y-6">
-            <Tabs defaultValue="pickup-points" className="w-full">
-              <TabsList className="grid w-full grid-cols-2 mb-4">
-                <TabsTrigger value="pickup-points" className="flex items-center gap-2">
-                  <MapPin className="w-4 h-4" />
-                  Puntos de Recogida
-                </TabsTrigger>
-                <TabsTrigger value="vehicles" className="flex items-center gap-2">
-                  <Truck className="w-4 h-4" />
-                  Vehículos
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="pickup-points" className="space-y-6 mt-0">
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <MapPin className="w-5 h-5" />
-                      Puntos de Recogida
+        {/* Main Content Area - Flex layout for results and map */}
+        <div className="flex gap-4 w-full">
+          {/* Results Container - Left Side (only shown when routes exist) */}
+          {routes.length > 0 && (() => {
+          // Filter routes to match legend: only routes with valid polylines AND at least one actual stop (excluding start/end)
+          const routesWithPolylines = routes.map((route: any, index: number) => {
+            const vehicleRoute = route.route_data?.route || [];
+            const hasValidCoordinates = vehicleRoute.some((routeStop: any) => 
+              routeStop.stop?.location?.lon && routeStop.stop?.location?.lat
+            );
+            const actualStopCount = vehicleRoute.filter((routeStop: any) => {
+              const stopId = routeStop.stop?.id;
+              const hasLocation = routeStop.stop?.location?.lon && routeStop.stop?.location?.lat;
+              const isActualStop = stopId && !stopId.includes("-start") && !stopId.includes("-end");
+              return hasLocation && isActualStop;
+            }).length;
+            const hasActualStops = actualStopCount >= 1;
+            return (hasValidCoordinates && hasActualStops) ? { route, index } : null;
+          }).filter((item): item is { route: any; index: number } => item !== null);
+
+          // Group by vehicle and keep only one route per vehicle
+          const MapConstructor = globalThis.Map || window.Map;
+          const vehicleRouteMap = new MapConstructor<string, { route: any; index: number }>();
+          routesWithPolylines.forEach(({ route, index }) => {
+            let vehicleId = route.vehicle_id || route.route_data?.id || null;
+            if (!vehicleId && route.route_data?.route && route.route_data.route.length > 0) {
+              const firstStopId = route.route_data.route[0]?.stop?.id;
+              vehicleId = firstStopId || `route-${index}`;
+            }
+            const identifier = vehicleId || `null-route-${index}`;
+            if (!vehicleRouteMap.has(identifier)) {
+              vehicleRouteMap.set(identifier, { route, index });
+            }
+          });
+          
+          const uniqueVehicleRoutes = Array.from(vehicleRouteMap.values());
+          const routeColors = [
+            "#26bc30", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16",
+          ];
+          
+          const getVehicleName = (routeIndex: number, route: any): string => {
+            if (route.vehicle_id && vehicles.length > 0) {
+              const vehicle = vehicles.find(v => v.id === route.vehicle_id);
+              if (vehicle) return vehicle.name;
+            }
+            if (route.route_data?.id && vehicles.length > 0) {
+              const vehicle = vehicles.find(v => v.id === route.route_data.id || `vehicle-${vehicles.indexOf(v)}` === route.route_data.id);
+              if (vehicle) return vehicle.name;
+            }
+            return vehicles[routeIndex]?.name || `Vehículo ${routeIndex + 1}`;
+          };
+
+          // Calculate route count
+          const validRoutes = routes.filter(route => {
+            const duration = route.route_data?.route_travel_duration || route.route_data?.route_duration || route.total_duration || 0;
+            return duration > 0;
+          });
+          const seenVehicles = new Set<string | null>();
+          const uniqueRoutes = validRoutes.filter(route => {
+            const vehicleId = route.vehicle_id || route.route_data?.id || null;
+            if (vehicleId && seenVehicles.has(vehicleId)) {
+              return false;
+            }
+            if (vehicleId) {
+              seenVehicles.add(vehicleId);
+            }
+            return true;
+          });
+          const routeCount = uniqueRoutes.length;
+
+          // Helper function to extract passengers from route stops
+          const extractPassengersFromRoute = (route: any): string[] => {
+            const vehicleRoute = route.route_data?.route || [];
+            const personIds = new Set<string>();
+            
+            vehicleRoute.forEach((routeStop: any) => {
+              const stopId = routeStop.stop?.id;
+              if (!stopId || stopId.includes("-start") || stopId.includes("-end")) return;
+              
+              // Extract person IDs from stop ID if encoded
+              // Format: {point.id}__person_{person_id1}__person_{person_id2}...
+              if (stopId.includes('__person_')) {
+                // Match all occurrences of __person_ followed by the person ID
+                // Person ID can contain letters, numbers, hyphens, etc. until next __person_ or end of string
+                const regex = /__person_([^_]+?)(?=__person_|$)/g;
+                let match;
+                while ((match = regex.exec(stopId)) !== null) {
+                  const personId = match[1];
+                  if (personId) {
+                    personIds.add(personId);
+                  }
+                }
+              }
+              
+              // Fallback: check if point has person_id
+              const originalPointId = stopId.split('__person_')[0];
+              const point = pickupPoints.find(p => p.id === originalPointId);
+              if (point?.person_id) {
+                // person_id might be comma-separated or single value
+                const ids = point.person_id.split(',').map(id => id.trim()).filter(id => id);
+                ids.forEach(id => personIds.add(id));
+              }
+            });
+            
+            return Array.from(personIds);
+          };
+
+          return (
+            <div className="w-[450px] flex-shrink-0 flex flex-col h-[calc(100vh-240px)] pr-2">
+              <Tabs defaultValue="summary" className="w-full h-full flex flex-col">
+                <TabsList className="grid w-full grid-cols-2 mb-2 flex-shrink-0 h-10">
+                  <TabsTrigger value="summary">Resumen</TabsTrigger>
+                  <TabsTrigger value="routes">Rutas</TabsTrigger>
+                </TabsList>
+                
+                <TabsContent value="summary" className="!mt-0 h-[calc(100%-2.5rem)]">
+                  <div className="h-full flex flex-col">
+                  {/* Optimization Info - Show when routes exist (loaded or recently added) */}
+                  {(selectedRunId || routes.length > 0) && (
+                <Card className="flex-1 min-h-0 flex flex-col">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="flex items-center justify-between text-base">
+                      <span className="flex items-center gap-2">
+                        <History className="w-4 h-4" />
+                        Optimización
+                      </span>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => {
+                          setSelectedRunId(null);
+                          setSelectedRunData(null);
+                          setRoutes([]);
+                          setVisibleRoutes(new Set());
+                          supabase
+                            .from("routes")
+                            .delete()
+                            .gte("created_at", "1970-01-01");
+                        }}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
                     </CardTitle>
-                    <div className="flex flex-col gap-2 overflow-hidden" style={{ marginTop: '32px' }}>
-                      <div className="flex gap-2 flex-wrap">
-                        <label htmlFor="excel-upload" className="cursor-pointer flex-shrink-0">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="cursor-pointer px-3 whitespace-nowrap"
-                            onClick={() => document.getElementById("excel-upload")?.click()}
-                          >
-                            <Upload className="w-4 h-4 mr-1.5" />
-                            Subir Excel
-                          </Button>
-                          <input
-                            id="excel-upload"
-                            type="file"
-                            accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                            onChange={handleFileInputChange}
-                            className="hidden"
-                          />
-                        </label>
-                        <Button
-                          onClick={() => {
-                            setEditingPickupPoint(null);
-                            setIsPickupPointDialogOpen(true);
-                          }}
-                          size="sm"
-                          className="px-3 whitespace-nowrap flex-shrink-0"
-                        >
-                          <Plus className="w-4 h-4 mr-1.5" />
-                          Agregar Punto
-                        </Button>
-                      </div>
-                      {pickupPoints.length > 0 && (
-                        <AlertDialog open={isDeleteAllPointsDialogOpen} onOpenChange={setIsDeleteAllPointsDialogOpen}>
-                          <AlertDialogTrigger asChild>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              className="px-3 whitespace-nowrap flex-shrink-0 w-fit"
-                            >
-                              <Trash2 className="w-4 h-4 mr-1.5" />
-                              Eliminar Todos
-                            </Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>¿Eliminar todos los puntos?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                ¿Estás seguro de que deseas eliminar todos los {pickupPoints.length} puntos de recogida? Esta acción no se puede deshacer.
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                              <AlertDialogAction
-                                onClick={handleDeleteAllPickupPoints}
-                                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                              >
-                                Eliminar Todos
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      )}
-                    </div>
                   </CardHeader>
-                  <CardContent>
-                    <PickupPointsList 
-                      points={pickupPoints} 
-                      onRemove={handleRemovePickupPoint}
-                      onPointClick={(point) => setFocusedPoint(point)}
-                      onEdit={handleEditPickupPoint}
-                    />
+                  <CardContent className="space-y-3 text-sm flex-1 min-h-0 overflow-y-auto">
+                    {/* Stats Grid */}
+                    <div className="grid grid-cols-3 gap-2 pb-3 border-b flex-shrink-0">
+                      <div className="flex flex-col items-center text-center">
+                        <MapPin className="w-5 h-5 mb-1 text-primary" />
+                        <p className="text-xs text-muted-foreground mb-1">Puntos</p>
+                        <p className="text-lg font-bold">{pickupPoints.length}</p>
+                      </div>
+                      <div className="flex flex-col items-center text-center">
+                        <Truck className="w-5 h-5 mb-1 text-secondary-foreground" />
+                        <p className="text-xs text-muted-foreground mb-1">Vehículos</p>
+                        <p className="text-lg font-bold">{vehicles.length}</p>
+                      </div>
+                      <div className="flex flex-col items-center text-center">
+                        <Route className="w-5 h-5 mb-1 text-accent-foreground" />
+                        <p className="text-xs text-muted-foreground mb-1">Rutas</p>
+                        <p className="text-lg font-bold">{routeCount}</p>
+                      </div>
+                    </div>
+
+                    {/* Execution Info - Only show if loaded from history */}
+                    {selectedRunId && (
+                      <div>
+                        <p className="text-muted-foreground text-xs">ID de Ejecución</p>
+                        <p className="font-mono text-xs break-all">{selectedRunId}</p>
+                      </div>
+                    )}
+                    {selectedRunData && (selectedRunData.metadata?.created_at || selectedRunData.created_at) && (
+                      <div>
+                        <p className="text-muted-foreground text-xs">Fecha</p>
+                        <p className="text-xs">
+                          {new Date(selectedRunData.metadata?.created_at || selectedRunData.created_at).toLocaleString('es-ES', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                      </div>
+                    )}
+                    {selectedRunData && (selectedRunData.metadata?.status || selectedRunData.status) && (
+                      <div className="pt-2 border-t">
+                        <p className="text-muted-foreground text-xs">Estado</p>
+                        <p className="text-xs">
+                          {(() => {
+                            const status = selectedRunData.metadata?.status || selectedRunData.status;
+                            return status === "succeeded" ? "✓ Completado" :
+                                   status === "failed" ? "✗ Fallido" :
+                                   status === "error" ? "✗ Error" :
+                                   status === "running" ? "⟳ Ejecutando" :
+                                   status === "queued" ? "⏳ En cola" :
+                                   status;
+                          })()}
+                        </p>
+                      </div>
+                    )}
+                    <div className="pt-2 border-t space-y-2">
+                      <Button
+                        onClick={handleExportToExcel}
+                        variant="default"
+                        size="sm"
+                        className="w-full"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Descargar Excel
+                      </Button>
+                      <Button
+                        onClick={handleExportToKML}
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Descargar KML
+                      </Button>
+                    </div>
                   </CardContent>
                 </Card>
-              </TabsContent>
-              <TabsContent value="vehicles" className="mt-0">
-                <VehicleConfig 
-                  onAdd={handleAddVehicle}
-                  onUpdate={handleUpdateVehicle}
-                  onDelete={handleDeleteVehicle} 
-                  vehicles={vehicles}
-                  onMapClickMode={handleVehicleLocationMapClick}
-                  onLocationUpdate={handleVehicleLocationUpdate}
-                  isDialogOpen={isVehicleDialogOpen}
-                  setIsDialogOpen={setIsVehicleDialogOpen}
-                  onVehicleExcelUpload={handleVehicleExcelUpload}
-                />
-              </TabsContent>
-            </Tabs>
-          </div>
+                  )}
+                  </div>
+                </TabsContent>
+                
+                <TabsContent value="routes" className="!mt-0 h-[calc(100%-2.5rem)]">
+                  <div className="h-full flex flex-col">
+                    {/* Route List */}
+                    {uniqueVehicleRoutes.length > 0 && (
+                  <Card className="flex-1 min-h-0 flex flex-col h-full">
+                    <CardHeader className="pb-2 pt-3 px-3 flex-shrink-0">
+                      <CardTitle className="text-sm flex items-center justify-between">
+                        <span>Lista de Rutas</span>
+                        {selectedRouteIndex !== null && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 text-xs"
+                            onClick={() => {
+                              setSelectedRouteIndex(null);
+                              // Show all routes on the map
+                              setVisibleRoutes(new Set(routes.map((_, index) => index)));
+                            }}
+                          >
+                            <ArrowLeft className="w-3 h-3 mr-1" />
+                            Volver
+                          </Button>
+                        )}
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="flex-1 min-h-0 flex flex-col !p-0 overflow-hidden">
+                      {selectedRouteIndex === null ? (
+                        // Route List View
+                        <div className="space-y-2 h-full overflow-y-auto px-3 pb-3">
+                        {uniqueVehicleRoutes.map(({ route, index }) => {
+                          const color = routeColors[index % routeColors.length];
+                          const vehicleName = getVehicleName(index, route);
+                          const vehicleRoute = route.route_data?.route || [];
+                          
+                          // Count actual stops (excluding start/end)
+                          const actualStops = vehicleRoute.filter((routeStop: any) => {
+                            const stopId = routeStop.stop?.id;
+                            return stopId && !stopId.includes("-start") && !stopId.includes("-end");
+                          }).length;
+                          
+                          // Count passengers by extracting from route stops
+                          const passengers = extractPassengersFromRoute(route);
+                          const passengerCount = passengers.length;
+                          
+                          // Get distance and duration
+                          const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
+                          const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
+                          
+                          // Format distance (convert meters to km if needed)
+                          const distanceKm = totalDistance > 1000 ? (totalDistance / 1000).toFixed(2) : totalDistance.toFixed(2);
+                          const distanceUnit = totalDistance > 1000 ? "km" : "m";
+                          
+                          // Format duration (convert seconds to minutes if needed)
+                          const durationMin = totalDuration > 60 ? (totalDuration / 60).toFixed(1) : totalDuration.toFixed(0);
+                          const durationUnit = totalDuration > 60 ? "min" : "seg";
+                          
+                          return (
+                            <div
+                              key={index}
+                              className="p-2 rounded-lg border cursor-pointer hover:bg-muted transition-colors"
+                              onClick={() => {
+                                setSelectedRouteIndex(index);
+                                // Show only this route on the map
+                                setVisibleRoutes(new Set([index]));
+                              }}
+                            >
+                              <div className="flex items-start gap-2">
+                                <div
+                                  className="w-3 h-3 rounded-sm flex-shrink-0 mt-0.5"
+                                  style={{ backgroundColor: color }}
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <p className="font-semibold text-sm truncate">{vehicleName}</p>
+                                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
+                                    <div>
+                                      <span className="font-medium">Pasajeros:</span> {passengerCount}
+                                    </div>
+                                    <div>
+                                      <span className="font-medium">Paradas:</span> {actualStops}
+                                    </div>
+                                    <div>
+                                      <span className="font-medium">Distancia:</span> {distanceKm} {distanceUnit}
+                                    </div>
+                                    <div>
+                                      <span className="font-medium">Duración:</span> {durationMin} {durationUnit}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      // Route Detail View
+                      (() => {
+                        const selectedRoute = uniqueVehicleRoutes.find(({ index }) => index === selectedRouteIndex);
+                        if (!selectedRoute) return null;
+                        
+                        const { route, index } = selectedRoute;
+                        const color = routeColors[index % routeColors.length];
+                        const vehicleName = getVehicleName(index, route);
+                        const vehicleRoute = route.route_data?.route || [];
+                        
+                        // Extract original point ID helper
+                        const extractOriginalPointId = (stopId: string): string => {
+                          if (!stopId) return stopId;
+                          const idx = stopId.indexOf('__person_');
+                          return idx > -1 ? stopId.substring(0, idx) : stopId;
+                        };
+                        
+                        // Get all stops with passengers
+                        const stopsWithDetails = vehicleRoute
+                          .filter((routeStop: any) => {
+                            const stopId = routeStop.stop?.id;
+                            return stopId && !stopId.includes("-start") && !stopId.includes("-end");
+                          })
+                          .map((routeStop: any, stopIndex: number) => {
+                            const stopId = routeStop.stop?.id;
+                            const originalPointId = extractOriginalPointId(stopId);
+                            const point = pickupPoints.find(p => p.id === originalPointId);
+                            
+                            // Extract person IDs from stop ID if encoded
+                            // Format can be: {point.id}__person_{person_id1}__person_{person_id2}...
+                            let personIds: string[] = [];
+                            if (stopId.includes('__person_')) {
+                              const regex = /__person_([^_]+)/g;
+                              let match;
+                              while ((match = regex.exec(stopId)) !== null) {
+                                personIds.push(match[1]);
+                              }
+                            }
+                            
+                            // Fallback: check if point has person_id
+                            if (personIds.length === 0 && point?.person_id) {
+                              // person_id might be comma-separated
+                              personIds = point.person_id.split(',').map(id => id.trim()).filter(id => id);
+                            }
+                            
+                            return {
+                              stopIndex: stopIndex + 1,
+                              stopId: originalPointId,
+                              pointName: point?.name || stopId,
+                              personIds: personIds,
+                              location: routeStop.stop?.location,
+                            };
+                          });
+                        
+                        return (
+                          <div className="space-y-3 h-full overflow-y-auto px-3 pb-3">
+                            <div className="flex items-center gap-2 pb-2 border-b">
+                              <div
+                                className="w-3 h-3 rounded-sm flex-shrink-0"
+                                style={{ backgroundColor: color }}
+                              />
+                              <p className="font-semibold text-sm">{vehicleName}</p>
+                            </div>
+                            <div className="space-y-2">
+                              {stopsWithDetails.map((stop, idx) => (
+                                <div key={idx} className="p-2 rounded-lg border bg-muted/50">
+                                  <div className="flex items-start justify-between mb-1">
+                                    <div>
+                                      <p className="font-medium text-sm">
+                                        Parada {stop.stopIndex}: {stop.pointName}
+                                      </p>
+                                    </div>
+                                  </div>
+                                  {stop.personIds.length > 0 && (
+                                    <div className="mt-1">
+                                      <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {stop.personIds.map((personId, pIdx) => (
+                                          <span
+                                            key={pIdx}
+                                            className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
+                                          >
+                                            {personId}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+                                  {stop.personIds.length === 0 && (
+                                    <p className="text-xs text-muted-foreground italic">Sin pasajeros asignados</p>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })()
+                    )}
+                    </CardContent>
+                  </Card>
+                    )}
+                  </div>
+                </TabsContent>
+              </Tabs>
+            </div>
+          );
+        })()}
 
-          <div className="lg:col-span-2 relative">
-            <Card className="h-[calc(100vh-240px)]">
-              <CardContent className="p-0 h-full">
+          {/* Map Container - Full width or with results container */}
+          <div className={`relative min-w-0 ${routes.length > 0 ? 'flex-1' : 'w-full'}`}>
+            <Card className="h-[calc(100vh-240px)] w-full">
+              <CardContent className="p-0 h-full w-full">
                 <Map 
                   pickupPoints={pickupPoints} 
                   routes={routes} 
@@ -3349,110 +3743,11 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                   vehicleLocationMode={vehicleLocationMode}
                   vehicleStartLocation={currentVehicleStartLocation}
                   vehicleEndLocation={currentVehicleEndLocation}
+                  selectedRouteIndex={selectedRouteIndex}
                 />
               </CardContent>
             </Card>
             
-            {/* Selected Optimization Info Overlay */}
-            {selectedRunId && selectedRunData && (
-              <Card className="absolute top-4 left-4 z-20 shadow-lg max-w-sm">
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center justify-between text-base">
-                    <span className="flex items-center gap-2">
-                      <History className="w-4 h-4" />
-                      Optimización Seleccionada
-                    </span>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-6 w-6"
-                      onClick={() => {
-                        setSelectedRunId(null);
-                        setSelectedRunData(null);
-                        setRoutes([]);
-                        setVisibleRoutes(new Set());
-                        supabase
-                          .from("routes")
-                          .delete()
-                          .gte("created_at", "1970-01-01");
-                      }}
-                    >
-                      <X className="w-4 h-4" />
-                    </Button>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-2 text-sm">
-                  <div>
-                    <p className="text-muted-foreground text-xs">ID de Ejecución</p>
-                    <p className="font-mono text-xs">{selectedRunId}</p>
-                  </div>
-                  {(selectedRunData.metadata?.created_at || selectedRunData.created_at) && (
-                    <div>
-                      <p className="text-muted-foreground text-xs">Fecha</p>
-                      <p className="text-xs">
-                        {new Date(selectedRunData.metadata?.created_at || selectedRunData.created_at).toLocaleString('es-ES', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </p>
-                    </div>
-                  )}
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t">
-                    <div>
-                      <p className="text-muted-foreground text-xs">Vehículos</p>
-                      <p className="text-lg font-bold">
-                        {selectedRunData.output?.solutions?.[0]?.vehicles?.length || 
-                         selectedRunData.solutions?.[0]?.vehicles?.length || 
-                         routes.length || 0}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-muted-foreground text-xs">Rutas</p>
-                      <p className="text-lg font-bold">{getValidRouteCount}</p>
-                    </div>
-                  </div>
-                  {(selectedRunData.metadata?.status || selectedRunData.status) && (
-                    <div className="pt-2 border-t">
-                      <p className="text-muted-foreground text-xs">Estado</p>
-                      <p className="text-xs">
-                        {(() => {
-                          const status = selectedRunData.metadata?.status || selectedRunData.status;
-                          return status === "succeeded" ? "✓ Completado" :
-                                 status === "failed" ? "✗ Fallido" :
-                                 status === "error" ? "✗ Error" :
-                                 status === "running" ? "⟳ Ejecutando" :
-                                 status === "queued" ? "⏳ En cola" :
-                                 status;
-                        })()}
-                      </p>
-                    </div>
-                  )}
-                  <div className="pt-2 border-t space-y-2">
-                    <Button
-                      onClick={handleExportToExcel}
-                      variant="default"
-                      size="sm"
-                      className="w-full"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      Descargar Excel
-                    </Button>
-                    <Button
-                      onClick={handleExportToKML}
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                    >
-                      <Download className="w-4 h-4 mr-2" />
-                      Descargar KML
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
             
             <Button
               onClick={() => setClickMode(!clickMode)}
