@@ -134,121 +134,7 @@ const Index = () => {
     return uniqueRoutes.length;
   }, [routes]);
 
-  // Run migration to add grupo column if it doesn't exist
-  const runMigrationIfNeeded = async () => {
-    try {
-      // Check if grupo column exists by trying to query it
-      const { data: vehiclesCheck, error: vehiclesError } = await supabase
-        .from('vehicles')
-        .select('grupo')
-        .limit(1);
-      
-      const { data: pointsCheck, error: pointsError } = await supabase
-        .from('pickup_points')
-        .select('grupo')
-        .limit(1);
-      
-      // If we get a column error, the column doesn't exist
-      const vehiclesNeedsMigration = vehiclesError?.code === '42703' || vehiclesError?.message?.includes('column') || vehiclesError?.message?.includes('does not exist');
-      const pointsNeedsMigration = pointsError?.code === '42703' || pointsError?.message?.includes('column') || pointsError?.message?.includes('does not exist');
-      
-      // Check if columns exist (no error means they exist)
-      if (!vehiclesError && !pointsError) {
-        console.log('✅ grupo column exists in both vehicles and pickup_points tables');
-        // Migration is complete, no action needed
-      } else if (vehiclesNeedsMigration || pointsNeedsMigration) {
-        console.log('grupo column does not exist, attempting migration...');
-        
-        // Try to run migration automatically
-        // Since we can't execute DDL directly via Supabase client, we'll create and call an RPC function
-        try {
-          // First, try to create the migration function if it doesn't exist
-          // This uses dynamic SQL execution via a function that might already exist
-          try {
-            // Try to create the migration function first (requires admin access)
-            const createFunctionSQL = `
-CREATE OR REPLACE FUNCTION public.run_migration_add_grupo()
-RETURNS void AS $$
-BEGIN
-  ALTER TABLE public.vehicles ADD COLUMN IF NOT EXISTS grupo TEXT;
-  ALTER TABLE public.pickup_points ADD COLUMN IF NOT EXISTS grupo TEXT;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-            `.trim();
-            
-            // Try to execute via a helper function if available, otherwise we'll skip
-            // Most Supabase setups don't allow direct DDL execution from the client
-            console.log('Attempting to create migration function...');
-            
-            // Try calling the function if it exists, or if we can create it
-            const { error: migrationError } = await supabase.rpc('run_migration_add_grupo');
-            
-            if (migrationError) {
-              // Check if it's a "function not found" error (expected)
-              const isFunctionNotFound = 
-                migrationError.code === '42883' || 
-                migrationError.message?.toLowerCase().includes('function') ||
-                migrationError.message?.toLowerCase().includes('does not exist') ||
-                String(migrationError).includes('404');
-              
-              if (!isFunctionNotFound) {
-                console.warn('Migration RPC error:', migrationError);
-              }
-              
-              // Function doesn't exist - show instructions
-              console.log('⚠️ Migration function does not exist yet.');
-              console.log('📝 Please run this SQL in Supabase SQL Editor:');
-              console.log('─'.repeat(60));
-              console.log(createFunctionSQL);
-              console.log('─'.repeat(60));
-              console.log('\nOr run the migration directly:');
-              console.log('ALTER TABLE public.vehicles ADD COLUMN IF NOT EXISTS grupo TEXT;');
-              console.log('ALTER TABLE public.pickup_points ADD COLUMN IF NOT EXISTS grupo TEXT;');
-              
-              toast({
-                title: "Migración requerida",
-                description: "La columna 'grupo' no existe. Ejecuta el SQL en Supabase SQL Editor (ver consola para el SQL).",
-                variant: "default",
-              });
-            } else {
-              // Success - migration ran via RPC
-              console.log('✅ Migration executed successfully via RPC!');
-              toast({
-                title: "Migración completada",
-                description: "La columna 'grupo' ha sido agregada exitosamente.",
-              });
-            }
-          } catch (createError) {
-            console.warn('Could not create migration function:', createError);
-            // Fall through to manual instructions
-          }
-        } catch (migrationError: any) {
-          // Catch any unexpected errors
-          const isExpectedError = 
-            migrationError?.code === '42883' ||
-            migrationError?.message?.toLowerCase().includes('function') ||
-            migrationError?.message?.includes('404');
-          
-          if (!isExpectedError) {
-            console.warn('Unexpected error during migration:', migrationError);
-          }
-          
-          // Show manual instructions
-          console.log('📝 Please run this SQL in Supabase SQL Editor:');
-          console.log('ALTER TABLE public.vehicles ADD COLUMN IF NOT EXISTS grupo TEXT;');
-          console.log('ALTER TABLE public.pickup_points ADD COLUMN IF NOT EXISTS grupo TEXT;');
-        }
-      } else {
-        console.log('grupo column already exists in both tables');
-      }
-    } catch (error) {
-      console.warn('Error checking for grupo column:', error);
-      // Don't block the app if migration check fails
-    }
-  };
-
   useEffect(() => {
-    runMigrationIfNeeded();
     loadPickupPoints();
     loadVehicles();
     loadRuns();
@@ -429,33 +315,11 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
             });
           }
           
-          // Extract grupo from the original vehicle
-          const vehicleGrupo = originalVehicle?.grupo || null;
-          
-          // Try to extract grupo from pickup points if not available from vehicle
-          let routeGrupo = vehicleGrupo;
-          if (!routeGrupo && vehicle.route) {
-            // Find the first stop that matches a pickup point and get its grupo
-            for (const routeStop of vehicle.route) {
-              const stopId = routeStop.stop?.id;
-              if (!stopId || stopId.includes("-start") || stopId.includes("-end")) continue;
-              
-              const originalPointId = extractOriginalPointId(stopId);
-              const point = pickupPoints.find(p => p.id === originalPointId);
-              if (point?.grupo) {
-                routeGrupo = point.grupo;
-                break; // Use the first grupo found
-              }
-            }
-          }
-          
           const routeData = {
             vehicle_id: originalVehicle?.id || null,
             route_data: vehicle,
             total_distance: vehicle.route_travel_distance || 0,
             total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-            grupo: routeGrupo, // Include grupo from vehicle or pickup points
-            nextmv_run_ids: [runId], // Store this Nextmv run ID
             // Note: person_assignments column doesn't exist in the routes table
             // If needed, this data can be stored in route_data JSON field
           };
@@ -464,7 +328,7 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
           routeInserts.push(
             supabase.from("routes").insert(routeData).select().then(result => {
               if (result.error) {
-                console.error(`Error inserting route for vehicle ${vehicle.id || vehicleIndex}:`, {
+                console.error(`Error inserting route for vehicle ${vehicle.id || vehicleIndex} (solution ${solutionIndex}):`, {
                   message: result.error.message,
                   details: result.error.details,
                   hint: result.error.hint,
@@ -474,6 +338,9 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
                 });
               }
               return result;
+            }).catch(err => {
+              console.error(`Exception inserting route for vehicle ${vehicle.id || vehicleIndex}:`, err);
+              return { data: null, error: err };
             })
           );
       }
@@ -1400,12 +1267,28 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         grupo: updateData.grupo,
       };
 
-      // Update in localStorage only - point will be updated in Supabase when optimization runs
+      // Update in localStorage
       const updatedPoints = pickupPoints.map((p) => (p.id === editingPickupPoint.id ? updatedPoint : p));
       setPickupPoints(updatedPoints);
       savePointsToLocalStorage(updatedPoints);
       
-      console.log("ℹ️ Punto actualizado en localStorage. Se actualizará en Supabase cuando ejecutes la optimización.");
+      // Try Supabase if available (optional)
+      try {
+        await supabase
+          .from("pickup_points")
+          .update({
+            name: updateData.name,
+            address: updateData.address,
+            latitude: updateData.latitude,
+            longitude: updateData.longitude,
+            quantity: quantity,
+            person_id: updateData.person_id,
+            grupo: updateData.grupo,
+          })
+          .eq("id", editingPickupPoint.id);
+      } catch (error) {
+        console.warn("Supabase update failed (using localStorage):", error);
+      }
 
         setEditingPickupPoint(null);
         setIsPickupPointDialogOpen(false);
@@ -1424,15 +1307,28 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         longitude: insertData.longitude,
         quantity: quantity,
         person_id: insertData.person_id,
-        grupo: insertData.grupo,
       };
 
-      // Add to localStorage only - point will be saved to Supabase when optimization runs
+      // Add to localStorage
       const updatedPoints = [...pickupPoints, newPoint];
       setPickupPoints(updatedPoints);
       savePointsToLocalStorage(updatedPoints);
       
-      console.log("ℹ️ Punto guardado en localStorage. Se guardará en Supabase cuando ejecutes la optimización.");
+      // Try Supabase if available (optional)
+      try {
+        await supabase
+          .from("pickup_points")
+          .insert([{
+            name: insertData.name,
+            address: insertData.address || `${insertData.latitude}, ${insertData.longitude}`,
+            latitude: insertData.latitude,
+            longitude: insertData.longitude,
+            quantity: quantity,
+            person_id: insertData.person_id,
+          }]);
+      } catch (error) {
+        console.warn("Supabase insert failed (using localStorage):", error);
+      }
 
         setIsPickupPointDialogOpen(false);
     }
@@ -1505,11 +1401,20 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
 
   const handleExcelUpload = async (file: File) => {
     try {
-      // Clear existing points from localStorage only
-      // Points in Supabase will be managed when optimization runs
-      console.log("Limpiando puntos existentes de localStorage");
-      // Clear the state
-      setPickupPoints([]);
+      // First, delete all existing pickup points
+      const { error: deleteError } = await supabase
+        .from("pickup_points")
+        .delete()
+        .neq("id", "00000000-0000-0000-0000-000000000000"); // Delete all (using a condition that always matches)
+      
+      if (deleteError) {
+        console.error("Error deleting existing points:", deleteError);
+        // Continue anyway, might be empty table
+      } else {
+        console.log("Puntos existentes eliminados");
+        // Clear the state
+        setPickupPoints([]);
+      }
 
       // Dynamically import xlsx library
       // @ts-ignore - xlsx types may not be available until package is installed
@@ -1543,7 +1448,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         longitude: number;
         quantity: number;
         person_id?: string; // Store person_id(s) - comma-separated if multiple
-        grupo?: string; // Store grupo/group
+        grupo?: string; // Store grupo if available
       }
       
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1603,7 +1508,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         return;
       }
 
-      console.log("Columnas detectadas:", { latitudeKey, longitudeKey, quantityKey: quantityKey || "no encontrada", personIdKey: personIdKey || "no encontrada" });
+      console.log("Columnas detectadas:", { latitudeKey, longitudeKey, quantityKey: quantityKey || "no encontrada", personIdKey: personIdKey || "no encontrada", grupoKey: grupoKey || "no encontrada" });
       console.log(`Total de filas en Excel: ${jsonData.length}`);
 
       // STEP 1: Read and process ALL rows first, counting occurrences
@@ -1617,7 +1522,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         count: number; // Number of times this coordinate appears
         occurrences: number[]; // Track each occurrence for debugging
         person_ids: string[]; // Track person IDs at this location
-        grupo?: string; // Track grupo/group
+        grupo?: string; // Store grupo if available
       }> = {};
       
       for (const row of jsonData) {
@@ -1679,7 +1584,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           if (personId && !occurrenceMap[key].person_ids.includes(personId)) {
             occurrenceMap[key].person_ids.push(personId);
           }
-          // Keep grupo if not already set, or if both are the same
+          // Update grupo if available (use first non-empty value found)
           if (grupo && !occurrenceMap[key].grupo) {
             occurrenceMap[key].grupo = grupo;
           }
@@ -1693,7 +1598,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             count: 1, // Start with 1 occurrence
             occurrences: [1], // Track first occurrence
             person_ids: personId ? [personId] : [], // Store person_id if available
-            grupo: grupo, // Store grupo if available
+            grupo: grupo || undefined, // Store grupo if available
           };
           processedRows++;
           if (processedRows <= 5 || processedRows % 100 === 0) {
@@ -1892,7 +1797,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         console.warn("⚠️ ADVERTENCIA: No hay puntos con cantidad > 1 para insertar");
       }
       
-      // Save to localStorage only - points will be saved to Supabase when optimization runs
+      // Save to localStorage (works without Supabase)
       const pointsWithIds = allDataToInsert.map((point, index) => ({
         ...point,
         id: `local-${Date.now()}-${index}`, // Generate unique ID
@@ -1900,11 +1805,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         updated_at: new Date().toISOString(),
       }));
       
-      // Save to localStorage only - Supabase save happens during optimization
+      // Save to localStorage
       localStorage.setItem('pickup_points', JSON.stringify(pointsWithIds));
       console.log("=== PUNTOS GUARDADOS EN LOCALSTORAGE ===");
       console.log(`Total puntos guardados: ${pointsWithIds.length}`);
-      console.log("ℹ️ Nota: Los puntos se guardarán en Supabase cuando ejecutes la optimización");
       const pointsWithQtySaved = pointsWithIds.filter(p => p.quantity > 1);
       console.log(`Puntos con cantidad > 1: ${pointsWithQtySaved.length}`);
       
@@ -1913,6 +1817,34 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           name: p.name,
           quantity: p.quantity
         })));
+      }
+      
+      // Try Supabase if available (optional)
+      let insertedData: any[] | null = null;
+      let insertError: any = null;
+      
+      try {
+        const firstAttempt = await supabase
+          .from("pickup_points")
+          .insert(allDataToInsert)
+          .select();
+        
+        insertedData = firstAttempt.data;
+        insertError = firstAttempt.error;
+        
+        if (insertedData) {
+          console.log("=== TAMBIÉN GUARDADO EN SUPABASE ===");
+          console.log(`Total insertados en Supabase: ${insertedData.length}`);
+        }
+      } catch (error) {
+        console.warn("Supabase no disponible, usando solo localStorage:", error);
+      }
+
+      // If error about quantity column in Supabase, that's OK - we have it in localStorage
+      if (insertError && (insertError.code === "PGRST204" || insertError.message?.includes("quantity"))) {
+        console.warn("⚠️ Supabase no tiene columna 'quantity', pero los datos están guardados en localStorage con cantidad");
+      } else if (insertError) {
+        console.warn("Error en Supabase (pero datos guardados en localStorage):", insertError);
       }
 
       const insertedCount = pointsWithIds.length;
@@ -2115,13 +2047,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                  normalized.includes("fin") && normalized.includes("longitud");
         }
       );
-      
-      // Optional grupo column (case-insensitive, handles variations)
       const grupoKey = allKeys.find(
         key => {
           const normalized = key.toLowerCase().trim();
-          return normalized === "grupo" || 
-                 normalized === "group" ||
+          return normalized === "grupo" || normalized === "group" ||
                  normalized.includes("grupo");
         }
       );
@@ -2146,6 +2075,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         const placa = String(rowData[placaKey] || "").trim();
         const capacidad = parseFloat(rowData[capacidadKey]);
         const distanciaMax = parseFloat(rowData[distanciaKey]);
+        const grupo = grupoKey ? String(rowData[grupoKey] || "").trim() : undefined;
         
         // Validate data
         if (!placa || isNaN(capacidad) || isNaN(distanciaMax)) {
@@ -2190,13 +2120,11 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           }
         }
 
-        // Parse optional grupo
-        const grupo = grupoKey ? String(rowData[grupoKey] || "").trim() : undefined;
-
         const vehicle: Vehicle = {
           name: placa,
           capacity: Math.floor(capacidad),
           max_distance: distanciaMax,
+          grupo: grupo || undefined, // Include grupo if available
         };
 
         // Add locations if provided
@@ -2205,11 +2133,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         }
         if (endLocation) {
           vehicle.end_location = endLocation;
-        }
-        
-        // Add grupo if provided
-        if (grupo) {
-          vehicle.grupo = grupo;
         }
 
         vehiclesToInsert.push(vehicle);
@@ -2239,8 +2162,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         console.warn("Error deleting vehicles (may not be available):", error);
       }
 
-      // Insert new vehicles (grupo column should now exist after migration)
-      let finalVehicles = vehiclesToInsert;
+      // Insert new vehicles
       try {
         const { data: insertedData, error: insertError } = await supabase
           .from("vehicles")
@@ -2249,33 +2171,16 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
 
         if (insertError) {
           console.error("Error inserting vehicles:", insertError);
-          console.error("Error details:", {
-            message: insertError.message,
-            details: insertError.details,
-            hint: insertError.hint,
-            code: insertError.code
-          });
-          toast({
-            title: "Error al guardar en la base de datos",
-            description: `Algunos vehículos no se guardaron correctamente: ${insertError.message}`,
-            variant: "destructive",
-          });
           // Still update state even if Supabase fails
-        } else if (insertedData && insertedData.length > 0) {
+        } else {
           console.log("Vehicles inserted into Supabase:", insertedData);
-          // Use the inserted data with proper IDs from Supabase (includes grupo if present)
-          finalVehicles = insertedData;
         }
       } catch (error) {
         console.warn("Supabase not available, using state only:", error);
-        console.error("Supabase error:", error);
       }
 
-      // Update state with vehicles that have proper IDs
-      setVehicles(finalVehicles);
-      
-      // Also reload from database to ensure we have the latest data
-      await loadVehicles();
+      // Update state
+      setVehicles(vehiclesToInsert);
 
       toast({
         title: "Archivo cargado exitosamente",
@@ -2416,7 +2321,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
   };
 
   const handleAddVehicle = async (vehicle: Vehicle) => {
-    // Insert vehicle with grupo field (column should now exist after migration)
     const { data, error } = await supabase
       .from("vehicles")
       .insert([vehicle])
@@ -2424,22 +2328,14 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       .single();
 
     if (error) {
-      console.error("Error inserting vehicle:", error);
-      console.error("Error details:", {
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-        code: error.code
-      });
       toast({
         title: "Error",
-        description: `No se pudo agregar el vehículo: ${error.message}`,
+        description: "No se pudo agregar el vehículo",
         variant: "destructive",
       });
       return;
     }
 
-    // Use the data returned from Supabase (includes grupo if present)
     setVehicles([...vehicles, data]);
     setIsVehicleDialogOpen(false);
     
@@ -2542,16 +2438,13 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
   };
 
   // Build the JSON payload that will be sent to Nextmv (extracted for preview)
-  const buildNextmvPayload = (skipValidation = false, pointsToUse?: PickupPoint[], vehiclesToUse?: Vehicle[]) => {
-    const points = pointsToUse || pickupPoints;
-    const vehiclesForPayload = vehiclesToUse || vehicles;
-    
+  const buildNextmvPayload = (skipValidation = false) => {
     if (!skipValidation) {
-      if (points.length < 2) {
+      if (pickupPoints.length < 2) {
         throw new Error("Necesitas al menos 2 puntos de recogida");
       }
 
-      if (vehiclesForPayload.length === 0) {
+      if (vehicles.length === 0) {
         throw new Error("Necesitas configurar al menos 1 vehículo");
       }
     }
@@ -2568,7 +2461,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             end_time: "2025-01-01T22:00:00Z"
           }
         },
-        stops: points.map((point, index) => {
+        stops: pickupPoints.map((point, index) => {
           // Ensure coordinates are numbers, not strings
           const lon = Number(parseFloat(String(point.longitude)));
           const lat = Number(parseFloat(String(point.latitude)));
@@ -2604,15 +2497,15 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             quantity: nextmvQuantity // Negative value for Nextmv API
           };
         }),
-        vehicles: (vehiclesForPayload.length > 0 ? vehiclesForPayload : []).map((vehicle, index) => {
+        vehicles: (vehicles.length > 0 ? vehicles : []).map((vehicle, index) => {
           // Get start location from vehicle config, first pickup point, or default
           let startLocation: { lon: number; lat: number };
           if (vehicle.start_location) {
             startLocation = vehicle.start_location;
-          } else if (points[0] && points[0].longitude && points[0].latitude) {
+          } else if (pickupPoints[0] && pickupPoints[0].longitude && pickupPoints[0].latitude) {
             startLocation = {
-              lon: Number(parseFloat(String(points[0].longitude))),
-              lat: Number(parseFloat(String(points[0].latitude)))
+              lon: Number(parseFloat(String(pickupPoints[0].longitude))),
+              lat: Number(parseFloat(String(pickupPoints[0].latitude)))
             };
           } else {
             // Use default location if no points available (for preview)
@@ -2800,195 +2693,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Helper function to run optimization for a single group
-  const runOptimizationForGroup = async (grupo: string | null, groupData: { vehicles: Vehicle[]; points: PickupPoint[] }): Promise<{ solutions: any[]; runIds: string[] }> => {
-    const grupoLabel = grupo || 'sin grupo';
-    console.log(`Optimizing grupo: ${grupoLabel} (${groupData.vehicles.length} vehicles, ${groupData.points.length} points)`);
-    
-    // Build the JSON payload for this group
-    const { payload: cleanPayload, endpoint: nextmvFullUrl } = buildNextmvPayload(false, groupData.points, groupData.vehicles);
-    const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
-    const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Use proxy in development
-    
-    // Get Nextmv API key from environment or use fallback
-    const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
-    
-    if (!NEXTMV_API_KEY) {
-      throw new Error("VITE_NEXTMV_API_KEY no está configurado. Por favor, configura tu API key de Nextmv.");
-    }
-    
-    // Call Nextmv API through proxy (to avoid CORS issues)
-    let response: Response;
-    let responseData: any;
-    
-    try {
-      // Add timeout to prevent hanging (30 seconds)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        controller.abort();
-      }, 30000);
-      
-      try {
-        // Use proxy endpoint in development, direct URL in production (if CORS allows)
-        const apiUrl = import.meta.env.DEV ? nextmvEndpoint : nextmvFullUrl;
-        
-        // Convert to JSON string for the request
-        const requestBodyString = JSON.stringify(cleanPayload);
-        
-        // Verify JSON is valid
-        try {
-          JSON.parse(requestBodyString);
-        } catch (e) {
-          throw new Error(`Invalid JSON payload for grupo ${grupoLabel}: ${e}`);
-        }
-        
-        console.log(`[Grupo ${grupoLabel}] Sending JSON request to Nextmv:`, {
-          url: apiUrl,
-          method: "POST",
-          bodyLength: requestBodyString.length,
-        });
-        
-        response = await fetch(apiUrl, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-          },
-          body: requestBodyString,
-          signal: controller.signal
-        });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-      
-      // Try to parse response body regardless of status
-      const responseText = await response.text();
-      try {
-        responseData = JSON.parse(responseText);
-      } catch (parseError) {
-        // If parsing fails, use the raw text
-        responseData = { raw: responseText };
-      }
-      
-      // If response is not ok, treat it as an error
-      if (!response.ok) {
-        const errorMessage = responseData?.error?.message || responseData?.message || responseData?.error || `Error ${response.status}: ${response.statusText}`;
-        throw new Error(`Error optimizing grupo ${grupoLabel}: ${errorMessage}`);
-      }
-      
-      // Check if response data contains an error (even with 200 status)
-      if (responseData && responseData.error) {
-        const errorMessage = typeof responseData.error === 'string' 
-          ? responseData.error 
-          : responseData.error.message || JSON.stringify(responseData.error);
-        throw new Error(`Error in response for grupo ${grupoLabel}: ${errorMessage}`);
-      }
-      
-    } catch (fetchError: any) {
-      // Handle abort/timeout
-      if (fetchError.name === 'AbortError') {
-        throw new Error(`Timeout optimizing grupo ${grupoLabel}: La conexión con la API de Nextmv tardó demasiado.`);
-      }
-      
-      // If it's already an Error we threw, re-throw it
-      if (fetchError instanceof Error) {
-        throw fetchError;
-      }
-      
-      // Otherwise, it's a network or other error
-      console.error(`Error calling Nextmv API for grupo ${grupoLabel}:`, fetchError);
-      const errorMessage = fetchError?.message || String(fetchError);
-      throw new Error(`Error al conectar con Nextmv API para grupo ${grupoLabel}: ${errorMessage}`);
-    }
-    
-    // Check if the response contains a run ID (async job pattern)
-    let runId: string | null = null;
-    if (responseData && responseData.id) {
-      runId = responseData.id;
-      console.log(`[Grupo ${grupoLabel}] Received run ID from Nextmv:`, runId);
-    } else if (responseData && responseData.run_id) {
-      runId = responseData.run_id;
-      console.log(`[Grupo ${grupoLabel}] Received run ID from Nextmv:`, runId);
-    }
-
-    // If we have a run ID, fetch the run result
-    let data: any = null;
-    if (runId) {
-      console.log(`[Grupo ${grupoLabel}] Fetching run result for ID:`, runId);
-      
-      // Build the GET URL for the run
-      const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-      const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-      const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
-      
-      // Poll for the result every 10 seconds until solution is available
-      const pollInterval = 10000; // Poll every 10 seconds
-      const maxAttempts = 60; // Maximum 10 minutes (60 attempts * 10 seconds)
-      let attempts = 0;
-      let solutionAvailable = false;
-      
-      while (!solutionAvailable && attempts < maxAttempts) {
-        attempts++;
-        
-        try {
-          const runResponse = await fetch(runApiUrl, {
-            method: "GET",
-            headers: {
-              "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-              "Content-Type": "application/json",
-              "Accept": "application/json",
-            },
-          });
-          
-          if (!runResponse.ok) {
-            const errorText = await runResponse.text();
-            throw new Error(`Error fetching run for grupo ${grupoLabel}: ${runResponse.status} ${runResponse.statusText} - ${errorText}`);
-          }
-          
-          const runData = await runResponse.json();
-          
-          // Check metadata.status to determine if run is complete
-          const status = runData.metadata?.status || runData.status;
-          
-          if (status === "succeeded") {
-            data = runData;
-            solutionAvailable = true;
-            console.log(`[Grupo ${grupoLabel}] Run succeeded, proceeding to process solution`);
-          } else if (status === "failed" || status === "error") {
-            throw new Error(`Run failed for grupo ${grupoLabel}: ${runData.error || runData.message || runData.metadata?.error || "Unknown error"}`);
-          } else {
-            // Still processing, wait 10 seconds and try again
-            console.log(`[Grupo ${grupoLabel}] Run still processing (status: ${status || "unknown"}), waiting 10 seconds...`);
-            await new Promise(resolve => setTimeout(resolve, pollInterval));
-          }
-        } catch (pollError: any) {
-          if (attempts >= maxAttempts) {
-            throw new Error(`Timeout waiting for solution for grupo ${grupoLabel}: ${pollError.message || "Maximum polling attempts reached"}`);
-          }
-          // Wait 10 seconds before retrying
-          console.log(`[Grupo ${grupoLabel}] Error polling run, retrying in 10 seconds... (attempt ${attempts}/${maxAttempts})`);
-          await new Promise(resolve => setTimeout(resolve, pollInterval));
-        }
-      }
-      
-      if (!solutionAvailable) {
-        throw new Error(`Timeout: El proceso de optimización para grupo ${grupoLabel} tardó demasiado.`);
-      }
-    } else {
-      // No run ID, assume direct response with solution
-      data = responseData;
-    }
-
-    // Check if we got a valid solution
-    const solutions = data.output?.solutions || data.solutions;
-    if (!solutions || solutions.length === 0) {
-      throw new Error(`No se encontraron soluciones para las rutas del grupo ${grupoLabel}`);
-    }
-
-    return { solutions, runIds: runId ? [runId] : [] };
-  };
-
   const handleOptimizeRoutes = async () => {
     if (pickupPoints.length < 2) {
       toast({
@@ -3013,188 +2717,386 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     setSelectedRunId(null);
     setSelectedRunData(null);
     try {
-      // Group vehicles and pickup points by grupo
-      // Items without grupo form their own group (undefined/null)
-      // Use MapConstructor to avoid conflict with Map component import
-      const MapConstructor = globalThis.Map || window.Map;
-      const gruposMap = new MapConstructor<string | null, { vehicles: Vehicle[]; points: PickupPoint[] }>();
-      
-      // Initialize groups
-      const allGrupos = new Set<string | null>();
-      pickupPoints.forEach(point => allGrupos.add(point.grupo || null));
-      vehicles.forEach(vehicle => allGrupos.add(vehicle.grupo || null));
-      
-      // Populate groups
-      allGrupos.forEach(grupo => {
-        gruposMap.set(grupo, { vehicles: [], points: [] });
-      });
-      
-      // Assign vehicles to their groups
-      vehicles.forEach(vehicle => {
-        const grupo = vehicle.grupo || null;
-        gruposMap.get(grupo)?.vehicles.push(vehicle);
-      });
-      
-      // Assign pickup points to their groups
-      pickupPoints.forEach(point => {
-        const grupo = point.grupo || null;
-        gruposMap.get(grupo)?.points.push(point);
-      });
-      
-      // Filter out groups that don't have both vehicles and points
-      // A group needs at least 1 vehicle and 2 points to run an optimization
-      const validGrupos = Array.from(gruposMap.entries()).filter(([grupo, groupData]) => {
-        const hasVehicles = groupData.vehicles.length > 0;
-        const hasPoints = groupData.points.length >= 2;
-        if (!hasVehicles || !hasPoints) {
-          console.log(`Skipping grupo ${grupo || 'sin grupo'}: ${hasVehicles ? 'tiene vehículos' : 'sin vehículos'}, ${hasPoints ? 'tiene suficientes puntos' : 'no tiene suficientes puntos (mínimo 2)'}`);
-          return false;
-        }
-        return true;
-      });
-      
-      if (validGrupos.length === 0) {
-        throw new Error("No hay grupos válidos para optimizar. Cada grupo necesita al menos 1 vehículo y 2 puntos de recogida.");
-      }
-      
-      console.log(`Running optimizations for ${validGrupos.length} group(s):`, validGrupos.map(([g]) => g || 'sin grupo'));
-      
-      // Generate a unique optimization_run_id for this optimization run
-      // All routes from this run (across all groups) will share the same run_id
-      const optimizationRunId = crypto.randomUUID();
-      console.log(`Optimization run ID: ${optimizationRunId}`);
-      
-      // Save all points with optimization_run_id before running optimization
-      // This allows loading the exact points used in this optimization later
-      try {
-        // Get all points that will be used in this optimization
-        const pointsToSave = pickupPoints.filter(point => {
-          // Include points from all valid grupos that have both vehicles and points
-          const pointGrupo = point.grupo || null;
-          return validGrupos.some(([grupo]) => grupo === pointGrupo);
-        });
-        
-        if (pointsToSave.length > 0) {
-          console.log(`Saving ${pointsToSave.length} points to Supabase before optimization...`);
-          
-          // Prepare all points for insert/update
-          // All points will be inserted or updated - Supabase will handle duplicates if needed
-          const EPSILON = 0.0000001;
-          let updatedCount = 0;
-          let insertedCount = 0;
-          
-          for (const point of pointsToSave) {
-            try {
-              // Try to find existing point by coordinates (to avoid duplicates)
-              const { data: existingPoints, error: findError } = await supabase
-                .from("pickup_points")
-                .select("id")
-                .gte("latitude", point.latitude - EPSILON)
-                .lte("latitude", point.latitude + EPSILON)
-                .gte("longitude", point.longitude - EPSILON)
-                .lte("longitude", point.longitude + EPSILON)
-                .limit(1);
-              
-              if (findError) {
-                console.warn(`Error finding point at ${point.latitude}, ${point.longitude}:`, findError);
-                // Try to insert anyway
-              }
-              
-              if (existingPoints && existingPoints.length > 0) {
-                // Update existing point
-                const existingId = existingPoints[0].id;
-                const { error: updateError } = await supabase
-                  .from("pickup_points")
-                  .update({
-                    optimization_run_id: optimizationRunId,
-                    person_id: point.person_id || null,
-                    grupo: point.grupo || null,
-                    quantity: point.quantity || 1,
-                    name: point.name,
-                    address: point.address,
-                  })
-                  .eq("id", existingId);
-                
-                if (updateError) {
-                  console.warn(`Error updating point at ${point.latitude}, ${point.longitude}:`, updateError);
-                } else {
-                  updatedCount++;
-                }
-              } else {
-                // Insert new point
-                const { error: newInsertError } = await supabase
-                  .from("pickup_points")
-                  .insert([{
-                    name: point.name,
-                    address: point.address,
-                    latitude: point.latitude,
-                    longitude: point.longitude,
-                    quantity: point.quantity || 1,
-                    person_id: point.person_id || null,
-                    grupo: point.grupo || null,
-                    optimization_run_id: optimizationRunId,
-                  }])
-                  .select();
-                
-                if (newInsertError) {
-                  console.warn(`Error inserting new point at ${point.latitude}, ${point.longitude}:`, newInsertError);
-                } else {
-                  insertedCount++;
-                }
-              }
-            } catch (pointError) {
-              console.warn(`Error processing point at ${point.latitude}, ${point.longitude}:`, pointError);
-            }
-          }
-          
-          console.log(`Saved ${pointsToSave.length} points to Supabase: ${updatedCount} updated, ${insertedCount} inserted`);
-        }
-      } catch (saveError) {
-        console.warn("Error saving points with optimization_run_id (continuing anyway):", saveError);
-        // Don't block optimization if saving points fails
-      }
-      
-      // Run optimization for each group and collect results
-      const allSolutions: any[] = [];
-      const allRunIds: string[] = [];
-      
-      for (const [grupo, groupData] of validGrupos) {
-        try {
-          const result = await runOptimizationForGroup(grupo, groupData);
-          allSolutions.push(...result.solutions);
-          allRunIds.push(...result.runIds);
-        } catch (error) {
-          const grupoLabel = grupo || 'sin grupo';
-          console.error(`Error optimizing grupo ${grupoLabel}:`, error);
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          throw new Error(`Error optimizando grupo ${grupoLabel}: ${errorMessage}`);
-        }
-      }
-      
-      if (allSolutions.length === 0) {
-        throw new Error("No se encontraron soluciones para ningún grupo");
-      }
-      
-      // Combine all solutions into a single solution object
-      // Merge all vehicles from all solutions into one solution
-      const combinedSolution = {
-        vehicles: allSolutions.flatMap((sol: any) => sol.vehicles || []),
-        // Other solution properties from the first solution
-        ...(allSolutions[0] || {})
-      };
-      
-      // Use the combined solution
-      const solution = combinedSolution;
-      
-      if (!solution || !solution.vehicles || solution.vehicles.length === 0) {
-        throw new Error("La solución combinada no contiene vehículos válidos");
-      }
-      
-      // Store the first group's payload for preview (or combine them if needed)
-      const firstGroup = validGrupos[0];
-      const { payload: cleanPayload, endpoint: nextmvFullUrl } = buildNextmvPayload(false, firstGroup[1].points, firstGroup[1].vehicles);
+      // Build the JSON payload using the extracted function
+      const { payload: cleanPayload, endpoint: nextmvFullUrl } = buildNextmvPayload();
       setNextmvJson(cleanPayload);
       setNextmvEndpoint(nextmvFullUrl);
+      const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
+      const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Use proxy in development
+      
+      console.log("Calling Nextmv API:", {
+        endpoint: nextmvEndpoint,
+        fullUrl: nextmvFullUrl,
+        pickupPointsCount: pickupPoints.length,
+        vehiclesCount: vehicles.length,
+      });
+      
+      // Get Nextmv API key from environment or use fallback
+      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
+      
+      if (!NEXTMV_API_KEY) {
+        throw new Error("VITE_NEXTMV_API_KEY no está configurado. Por favor, configura tu API key de Nextmv.");
+      }
+      
+      // Call Nextmv API through proxy (to avoid CORS issues)
+      let response: Response;
+      let responseData: any;
+      
+      try {
+        // Add timeout to prevent hanging (30 seconds)
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => {
+          controller.abort();
+        }, 30000);
+        
+        try {
+          // Use proxy endpoint in development, direct URL in production (if CORS allows)
+          const apiUrl = import.meta.env.DEV ? nextmvEndpoint : nextmvFullUrl;
+          
+          // Convert to JSON string for the request
+          const requestBodyString = JSON.stringify(cleanPayload);
+          
+          // Verify JSON is valid
+          try {
+            JSON.parse(requestBodyString);
+          } catch (e) {
+            throw new Error(`Invalid JSON payload: ${e}`);
+          }
+          
+          console.log("Sending JSON request to Nextmv:", {
+            url: apiUrl,
+            method: "POST",
+            contentType: "application/json",
+            bodyLength: requestBodyString.length,
+            bodyPreview: requestBodyString.substring(0, 500),
+            fullBody: requestBodyString
+          });
+          
+          response = await fetch(apiUrl, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+              "Content-Type": "application/json",
+              "Accept": "application/json",
+            },
+            body: requestBodyString,
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+        
+        // Try to parse response body regardless of status
+        const responseText = await response.text();
+        try {
+          responseData = JSON.parse(responseText);
+        } catch (parseError) {
+          // If parsing fails, use the raw text
+          responseData = { raw: responseText };
+        }
+        
+        console.log("Nextmv API response:", {
+          status: response.status,
+          statusText: response.statusText,
+          data: responseData,
+          ok: response.ok
+        });
+        
+        // If response is not ok, treat it as an error
+        if (!response.ok) {
+          // Special handling for 400 Bad Request - show detailed error information
+          if (response.status === 400) {
+            let errorMessage = "Error de validación en la solicitud";
+            let errorDetails: any = null;
+            const errorParts: string[] = [];
+            
+            if (responseData) {
+              // Extract error message from various possible formats
+              if (typeof responseData === 'string') {
+                errorMessage = responseData;
+                errorParts.push(`Mensaje: ${responseData}`);
+              } else if (responseData.error) {
+                const errorObj = responseData.error;
+                if (typeof errorObj === 'string') {
+                  errorMessage = errorObj;
+                  errorParts.push(`Error: ${errorObj}`);
+                } else {
+                  errorMessage = errorObj.message || errorObj.error || JSON.stringify(errorObj);
+                  errorParts.push(`Error: ${errorMessage}`);
+                  
+                  // Add all error object properties
+                  Object.keys(errorObj).forEach(key => {
+                    if (key !== 'message' && key !== 'error') {
+                      const value = errorObj[key];
+                      if (value !== null && value !== undefined) {
+                        errorParts.push(`${key}: ${typeof value === 'object' ? JSON.stringify(value, null, 2) : value}`);
+                      }
+                    }
+                  });
+                }
+                errorDetails = errorObj;
+              } else if (responseData.message) {
+                errorMessage = responseData.message;
+                errorParts.push(`Mensaje: ${responseData.message}`);
+                errorDetails = responseData;
+              } else if (responseData.status && responseData.error) {
+                errorMessage = responseData.error;
+                errorParts.push(`Error: ${responseData.error}`);
+                errorDetails = responseData;
+              } else {
+                // If it's an object, extract all meaningful fields
+                errorMessage = "Error en la solicitud";
+                errorDetails = responseData;
+                
+                Object.keys(responseData).forEach(key => {
+                  const value = responseData[key];
+                  if (value !== null && value !== undefined && value !== '') {
+                    if (typeof value === 'object' && !Array.isArray(value)) {
+                      errorParts.push(`${key}:\n${JSON.stringify(value, null, 2)}`);
+                    } else if (Array.isArray(value) && value.length > 0) {
+                      errorParts.push(`${key}:\n${JSON.stringify(value, null, 2)}`);
+                    } else {
+                      errorParts.push(`${key}: ${value}`);
+                    }
+                  }
+                });
+              }
+              
+              // Add specific error details if available
+              if (responseData.details) {
+                const details = typeof responseData.details === 'string' 
+                  ? responseData.details 
+                  : JSON.stringify(responseData.details, null, 2);
+                errorParts.push(`\nDetalles:\n${details}`);
+              }
+              
+              if (responseData.validation_errors) {
+                const validationErrors = typeof responseData.validation_errors === 'string'
+                  ? responseData.validation_errors
+                  : JSON.stringify(responseData.validation_errors, null, 2);
+                errorParts.push(`\nErrores de validación:\n${validationErrors}`);
+              }
+              
+              if (responseData.field_errors) {
+                const fieldErrors = typeof responseData.field_errors === 'string'
+                  ? responseData.field_errors
+                  : JSON.stringify(responseData.field_errors, null, 2);
+                errorParts.push(`\nErrores de campos:\n${fieldErrors}`);
+              }
+              
+              // Log full error details for debugging
+              console.error("Nextmv API returned 400 Bad Request (FULL DETAILS):", {
+                status: response.status,
+                statusText: response.statusText,
+                errorMessage,
+                fullResponse: responseData,
+                errorDetails: errorDetails,
+                responseHeaders: Object.fromEntries(response.headers.entries()),
+                parsedErrorParts: errorParts
+              });
+              
+              // Build a detailed, user-friendly error message
+              const detailedErrorMessage = errorParts.length > 0 
+                ? errorParts.join('\n\n')
+                : `Error 400: ${errorMessage}\n\nRespuesta completa:\n${JSON.stringify(responseData, null, 2)}`;
+              
+              throw new Error(detailedErrorMessage);
+            } else {
+              // No response data, use status text
+              throw new Error(`Error 400: ${response.statusText || 'Bad Request'}\n\nNo se recibieron detalles adicionales del servidor.`);
+            }
+          } else {
+            // Handle other error status codes
+            let errorMessage = "Error al llamar a la API de Nextmv";
+            let errorDetails: any = null;
+            
+            // Try to extract detailed error information
+            if (responseData?.error) {
+              if (typeof responseData.error === 'string') {
+                errorMessage = responseData.error;
+              } else if (responseData.error.message) {
+                errorMessage = responseData.error.message;
+                errorDetails = responseData.error;
+              } else {
+                errorMessage = JSON.stringify(responseData.error);
+                errorDetails = responseData.error;
+              }
+            } else if (responseData?.message) {
+              errorMessage = typeof responseData.message === 'string' 
+                ? responseData.message 
+                : String(responseData.message);
+              errorDetails = responseData;
+            } else if (responseData?.raw) {
+              errorMessage = responseData.raw;
+            } else if (responseData) {
+              // If we have any response data, show it
+              errorMessage = JSON.stringify(responseData);
+              errorDetails = responseData;
+            } else if (response.statusText) {
+              errorMessage = `${response.status} ${response.statusText}`;
+            } else {
+              errorMessage = `Error ${response.status}: La API de Nextmv retornó un código de error`;
+            }
+            
+            // Log full error details for debugging
+            console.error("Nextmv API returned error (FULL DETAILS):", {
+              status: response.status,
+              statusText: response.statusText,
+              errorMessage,
+              fullResponse: responseData,
+              errorDetails: errorDetails,
+              responseHeaders: Object.fromEntries(response.headers.entries())
+            });
+            
+            // Build a detailed error message
+            let detailedErrorMessage = `Error ${response.status}: ${errorMessage}`;
+            
+            if (errorDetails) {
+              // Add specific error details if available
+              if (errorDetails.details) {
+                detailedErrorMessage += `\n\nDetalles: ${JSON.stringify(errorDetails.details, null, 2)}`;
+              }
+              if (errorDetails.validation_errors) {
+                detailedErrorMessage += `\n\nErrores de validación: ${JSON.stringify(errorDetails.validation_errors, null, 2)}`;
+              }
+              if (errorDetails.field_errors) {
+                detailedErrorMessage += `\n\nErrores de campos: ${JSON.stringify(errorDetails.field_errors, null, 2)}`;
+              }
+              // Show full error object if it has useful info
+              if (Object.keys(errorDetails).length > 1) {
+                detailedErrorMessage += `\n\nRespuesta completa: ${JSON.stringify(errorDetails, null, 2)}`;
+              }
+            }
+            
+            throw new Error(detailedErrorMessage);
+          }
+        }
+        
+        // Check if response data contains an error (even with 200 status)
+        if (responseData && responseData.error) {
+          console.error("Nextmv API returned error in data:", responseData.error);
+          const errorMessage = typeof responseData.error === 'string' 
+            ? responseData.error 
+            : responseData.error.message || JSON.stringify(responseData.error);
+          throw new Error(errorMessage);
+        }
+        
+      } catch (fetchError: any) {
+        // Handle abort/timeout
+        if (fetchError.name === 'AbortError') {
+          throw new Error("Timeout: La conexión con la API de Nextmv tardó demasiado. Intenta nuevamente.");
+        }
+        
+        // If it's already an Error we threw, re-throw it
+        if (fetchError instanceof Error) {
+          throw fetchError;
+        }
+        
+        // Otherwise, it's a network or other error
+        console.error("Error calling Nextmv API:", fetchError);
+        const errorMessage = fetchError?.message || String(fetchError);
+        
+        if (errorMessage.includes("dns error") || errorMessage.includes("failed to lookup")) {
+          throw new Error("Error de red: No se puede conectar a la API de Nextmv. Verifica tu conexión a internet.");
+        } else if (errorMessage.includes("CORS")) {
+          throw new Error("Error CORS: La API de Nextmv no permite solicitudes desde el navegador. Contacta al soporte.");
+        } else {
+          throw new Error(`Error al conectar con Nextmv API: ${errorMessage}`);
+        }
+      }
+      
+      // Check if the response contains a run ID (async job pattern)
+      let runId: string | null = null;
+      if (responseData && responseData.id) {
+        runId = responseData.id;
+        console.log("Received run ID from Nextmv:", runId);
+      } else if (responseData && responseData.run_id) {
+        runId = responseData.run_id;
+        console.log("Received run ID from Nextmv:", runId);
+      }
+
+      // If we have a run ID, fetch the run result
+      let data: any = null;
+      if (runId) {
+        console.log("Fetching run result for ID:", runId);
+        
+        // Build the GET URL for the run
+        const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
+        const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
+        const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
+        
+        // Poll for the result every 10 seconds until solution is available
+        const pollInterval = 10000; // Poll every 10 seconds
+        const maxAttempts = 60; // Maximum 10 minutes (60 attempts * 10 seconds)
+        let attempts = 0;
+        let solutionAvailable = false;
+        
+        while (!solutionAvailable && attempts < maxAttempts) {
+          attempts++;
+          
+          try {
+            const runResponse = await fetch(runApiUrl, {
+              method: "GET",
+              headers: {
+                "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+              },
+            });
+            
+            if (!runResponse.ok) {
+              const errorText = await runResponse.text();
+              throw new Error(`Error fetching run: ${runResponse.status} ${runResponse.statusText} - ${errorText}`);
+            }
+            
+            const runData = await runResponse.json();
+            console.log(`Run status (attempt ${attempts}):`, runData);
+            
+            // Check metadata.status to determine if run is complete
+            const status = runData.metadata?.status || runData.status;
+            
+            if (status === "succeeded") {
+              data = runData;
+              solutionAvailable = true;
+              console.log("Run succeeded, proceeding to display routes");
+            } else if (status === "failed" || status === "error") {
+              throw new Error(`Run failed: ${runData.error || runData.message || runData.metadata?.error || "Unknown error"}`);
+            } else {
+              // Still processing, wait 10 seconds and try again
+              console.log(`Run still processing (status: ${status || "unknown"}), waiting 10 seconds...`);
+              await new Promise(resolve => setTimeout(resolve, pollInterval));
+            }
+          } catch (pollError: any) {
+            if (attempts >= maxAttempts) {
+              throw new Error(`Timeout waiting for solution: ${pollError.message || "Maximum polling attempts reached"}`);
+            }
+            // Wait 10 seconds before retrying
+            console.log(`Error polling run, retrying in 10 seconds... (attempt ${attempts}/${maxAttempts})`);
+            await new Promise(resolve => setTimeout(resolve, pollInterval));
+          }
+        }
+        
+        if (!solutionAvailable) {
+          throw new Error("Timeout: El proceso de optimización tardó demasiado. Intenta nuevamente.");
+        }
+      } else {
+        // No run ID, assume direct response with solution
+        data = responseData;
+      }
+
+      // Check if we got a valid solution
+      // Solutions are in output.solutions, not directly in data.solutions
+      const solutions = data.output?.solutions || data.solutions;
+      if (!solutions || solutions.length === 0) {
+        throw new Error("No se encontraron soluciones para las rutas");
+      }
+
+      // Get the first solution (defined outside try block so it's accessible later)
+      const solution = solutions[0];
+      
+      if (!solution || !solution.vehicles) {
+        throw new Error("La solución no contiene vehículos válidos");
+      }
 
       // Save routes to Supabase database
       try {
@@ -3272,19 +3174,12 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             });
           }
           
-          // Extract grupo from the original vehicle (since routes are grouped by grupo)
-          // Find which grupo this vehicle belongs to by checking validGrupos
-          const vehicleGrupo = originalVehicle?.grupo || null;
-          
           // Extract route information from the vehicle object
           const routeData = {
             vehicle_id: originalVehicle?.id || null,
             route_data: vehicle,
             total_distance: vehicle.route_travel_distance || 0,
             total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-            grupo: vehicleGrupo, // Store grupo with the route
-            optimization_run_id: optimizationRunId, // All routes from this optimization run share the same ID
-            nextmv_run_ids: allRunIds.length > 0 ? allRunIds : null, // Store all Nextmv run IDs from this optimization
             // Note: person_assignments column doesn't exist in the routes table
             // If needed, this data can be stored in route_data JSON field
           };
@@ -3313,103 +3208,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             console.log(`Route ${index} inserted successfully, got ${result.data.length} record(s)`);
           }
         });
-
-        // Now save stop_ids from the optimization solution to pickup_points
-        // This allows us to link route stops back to pickup_points with their passenger IDs
-        try {
-          // Create a map of stop_id -> coordinates to update
-          const stopIdToCoordinatesMap = new Map<string, { lat: number; lon: number; stopId: string }>();
-          
-          // Extract stop_ids from all routes in the solution
-          for (const vehicle of solution.vehicles || []) {
-            const vehicleRoute = vehicle.route || [];
-            for (const routeStop of vehicleRoute) {
-              const stopId = routeStop.stop?.id;
-              if (!stopId || stopId.includes("-start") || stopId.includes("-end")) continue;
-              
-              // Get coordinates from the stop
-              const location = routeStop.stop?.location;
-              if (!location || !location.lat || !location.lon) {
-                // Fallback: try to find point by extracted ID
-                const originalPointId = extractOriginalPointId(stopId);
-                const point = pickupPoints.find(p => p.id === originalPointId);
-                if (point) {
-                  stopIdToCoordinatesMap.set(stopId, {
-                    lat: point.latitude,
-                    lon: point.longitude,
-                    stopId: stopId
-                  });
-                }
-              } else {
-                stopIdToCoordinatesMap.set(stopId, {
-                  lat: Number(location.lat),
-                  lon: Number(location.lon),
-                  stopId: stopId
-                });
-              }
-            }
-          }
-
-          // Update pickup_points with stop_ids by matching coordinates
-          // This works regardless of whether points have local- IDs or Supabase UUIDs
-          const EPSILON = 0.0000001;
-          let updatedCount = 0;
-          let errorCount = 0;
-          
-          for (const [stopId, { lat, lon }] of stopIdToCoordinatesMap.entries()) {
-            try {
-              // Find point by coordinates (same method we used when saving points)
-              const { data: existingPoints, error: findError } = await supabase
-                .from("pickup_points")
-                .select("id")
-                .gte("latitude", lat - EPSILON)
-                .lte("latitude", lat + EPSILON)
-                .gte("longitude", lon - EPSILON)
-                .lte("longitude", lon + EPSILON)
-                .limit(1);
-              
-              if (findError) {
-                console.warn(`Error finding point at ${lat}, ${lon} for stop_id ${stopId}:`, findError);
-                errorCount++;
-                continue;
-              }
-              
-              if (existingPoints && existingPoints.length > 0) {
-                // Update point with stop_id
-                const pointId = existingPoints[0].id;
-                const { error: updateError } = await supabase
-                  .from("pickup_points")
-                  .update({ stop_id: stopId })
-                  .eq("id", pointId);
-                
-                if (updateError) {
-                  console.warn(`Error updating point ${pointId} with stop_id ${stopId}:`, updateError);
-                  errorCount++;
-                } else {
-                  updatedCount++;
-                }
-              } else {
-                console.warn(`No point found at coordinates ${lat}, ${lon} for stop_id ${stopId}`);
-                errorCount++;
-              }
-            } catch (pointError) {
-              console.warn(`Error processing stop_id ${stopId} at ${lat}, ${lon}:`, pointError);
-              errorCount++;
-            }
-          }
-
-          if (stopIdToCoordinatesMap.size > 0) {
-            if (updatedCount > 0) {
-              console.log(`Successfully updated ${updatedCount} pickup_points with stop_ids`);
-            }
-            if (errorCount > 0) {
-              console.warn(`Failed to update ${errorCount} points with stop_ids`);
-            }
-          }
-        } catch (stopIdError) {
-          console.warn("Error saving stop_ids to pickup_points (continuing anyway):", stopIdError);
-          // Don't block - optimization results are already saved
-        }
       } catch (dbError) {
         console.error("Error saving routes to database:", dbError);
         // Don't throw - we still want to show the results even if saving fails
@@ -3438,8 +3236,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             route_data: vehicle,
             total_distance: vehicle.route_travel_distance || 0,
             total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-            grupo: originalVehicle?.grupo || null, // Include grupo in immediate display
-            optimization_run_id: optimizationRunId, // Include optimization_run_id
             created_at: new Date().toISOString()
           };
         });
@@ -3455,42 +3251,21 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       });
 
       // In the background, wait for database to commit, then reload routes from database
-      // Load all routes from this optimization run (all groups together)
-      // This ensures we have the proper IDs and database records, and all groups are loaded together
+      // This ensures we have the proper IDs and database records
       setTimeout(async () => {
         const expectedRoutes = (solution.vehicles || []).length;
         const routesToLoad = Math.max(expectedRoutes * 2, vehicles.length * 2, 200);
         
-        // Load routes by optimization_run_id to get all routes from all groups in this run
         let { data: routesData, error: routesError } = await supabase
           .from("routes")
           .select("*")
-          .eq("optimization_run_id", optimizationRunId) // Load all routes from this optimization run
-          .order("created_at", { ascending: false });
-        
-        // Fallback: if optimization_run_id doesn't exist yet, load by created_at (for backwards compatibility)
-        if (routesError || !routesData || routesData.length === 0) {
-          console.log('Loading routes by created_at (fallback)...');
-          const fallbackResult = await supabase
-            .from("routes")
-            .select("*")
-            .order("created_at", { ascending: false })
-            .limit(routesToLoad);
-          routesData = fallbackResult.data;
-          routesError = fallbackResult.error;
-        }
+          .order("created_at", { ascending: false })
+          .limit(routesToLoad);
         
         console.log(`Loading routes from database: Expected ${expectedRoutes}, Got ${routesData?.length || 0}`);
-        console.log(`Optimization run ID: ${optimizationRunId}, Routes loaded: ${routesData?.length || 0}`);
         
         if (!routesError && routesData && routesData.length > 0) {
-          console.log(`Updating routes with database records. Route data:`, routesData.map(r => ({ 
-            id: r.id, 
-            vehicle_id: r.vehicle_id, 
-            grupo: r.grupo,
-            optimization_run_id: r.optimization_run_id,
-            has_route_data: !!r.route_data 
-          })));
+          console.log(`Updating routes with database records. Route data:`, routesData.map(r => ({ id: r.id, vehicle_id: r.vehicle_id, has_route_data: !!r.route_data })));
           setRoutes(routesData);
           setVisibleRoutes(new Set(routesData.map((_, index) => index)));
         }
@@ -3723,8 +3498,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                         isDialogOpen={isVehicleDialogOpen}
                         setIsDialogOpen={setIsVehicleDialogOpen}
                         onVehicleExcelUpload={handleVehicleExcelUpload}
-                        routes={routes}
-                        pickupPoints={pickupPoints}
                       />
                     </TabsContent>
                     <TabsContent value="config" className="mt-0 space-y-6">
@@ -3817,6 +3590,44 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             "#26bc30", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16",
           ];
           
+          // Helper function to get vehicle object from route
+          const getVehicleFromRoute = (routeIndex: number, route: any): Vehicle | undefined => {
+            // First, try to match by vehicle_id from database
+            if (route.vehicle_id && vehicles.length > 0) {
+              const vehicle = vehicles.find(v => v.id === route.vehicle_id);
+              if (vehicle) return vehicle;
+            }
+            
+            // Second, try to match by route_data.id (the vehicle ID from Nextmv response)
+            if (route.route_data?.id && vehicles.length > 0) {
+              // Try exact match first
+              let vehicle = vehicles.find(v => v.id === route.route_data.id);
+              if (vehicle) return vehicle;
+              
+              // Try matching with vehicle-{index} format
+              vehicle = vehicles.find((v, idx) => `vehicle-${idx}` === route.route_data.id);
+              if (vehicle) return vehicle;
+              
+              // Try matching by the vehicle ID format from Nextmv (could be UUID or other format)
+              vehicle = vehicles.find(v => String(v.id) === String(route.route_data.id));
+              if (vehicle) return vehicle;
+            }
+            
+            // Last resort: use route index in the unique routes array
+            const uniqueRoutesArray = Array.from(vehicleRouteMap.values());
+            const routePosition = uniqueRoutesArray.findIndex(r => r.index === routeIndex);
+            if (routePosition >= 0 && routePosition < vehicles.length) {
+              return vehicles[routePosition];
+            }
+            
+            // Fallback: try by index directly
+            if (routeIndex < vehicles.length) {
+              return vehicles[routeIndex];
+            }
+            
+            return undefined;
+          };
+
           const getVehicleName = (routeIndex: number, route: any): string => {
             // Debug logging
             console.log(`[getVehicleName] Route ${routeIndex}:`, {
@@ -3826,37 +3637,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               vehicle_ids: vehicles.map(v => v.id)
             });
             
-            // First, try to match by vehicle_id from database
-            if (route.vehicle_id && vehicles.length > 0) {
-              const vehicle = vehicles.find(v => v.id === route.vehicle_id);
-              if (vehicle) {
-                console.log(`[getVehicleName] Matched by vehicle_id: ${vehicle.name}`);
-                return vehicle.name;
-              }
-            }
-            
-            // Second, try to match by route_data.id (the vehicle ID from Nextmv response)
-            if (route.route_data?.id && vehicles.length > 0) {
-              // Try exact match first
-              let vehicle = vehicles.find(v => v.id === route.route_data.id);
-              if (vehicle) {
-                console.log(`[getVehicleName] Matched by route_data.id (exact): ${vehicle.name}`);
-                return vehicle.name;
-              }
-              
-              // Try matching with vehicle-{index} format
-              vehicle = vehicles.find((v, idx) => `vehicle-${idx}` === route.route_data.id);
-              if (vehicle) {
-                console.log(`[getVehicleName] Matched by vehicle-${vehicles.indexOf(vehicle)}: ${vehicle.name}`);
-                return vehicle.name;
-              }
-              
-              // Try matching by the vehicle ID format from Nextmv (could be UUID or other format)
-              vehicle = vehicles.find(v => String(v.id) === String(route.route_data.id));
-              if (vehicle) {
-                console.log(`[getVehicleName] Matched by route_data.id (string): ${vehicle.name}`);
-                return vehicle.name;
-              }
+            const vehicle = getVehicleFromRoute(routeIndex, route);
+            if (vehicle) {
+              console.log(`[getVehicleName] Matched vehicle: ${vehicle.name}`);
+              return vehicle.name;
             }
             
             // Third, try to get vehicle name from route_data if it exists
@@ -3865,17 +3649,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               return route.route_data.name;
             }
             
-            // Last resort: use route index in the unique routes array, but try to find a better match
-            // by checking if we can match by position in the original vehicles array
-            const uniqueRoutesArray = Array.from(vehicleRouteMap.values());
-            const routePosition = uniqueRoutesArray.findIndex(r => r.index === routeIndex);
-            if (routePosition >= 0 && routePosition < vehicles.length) {
-              const name = vehicles[routePosition]?.name || `Vehículo ${routePosition + 1}`;
-              console.log(`[getVehicleName] Using route position ${routePosition}: ${name}`);
-              return name;
-            }
-            
-            // Final fallback - but this is likely wrong, so log a warning
+            // Final fallback
             console.warn(`[getVehicleName] Using fallback for route ${routeIndex}. vehicle_id: ${route.vehicle_id}, route_data.id: ${route.route_data?.id}`);
             return `Vehículo ${routeIndex + 1}`;
           };
@@ -3899,7 +3673,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           const routeCount = uniqueRoutes.length;
 
           // Helper function to extract passengers from route stops
-          // NEW: Uses stop_id from pickup_points as primary source for passenger IDs
           const extractPassengersFromRoute = (route: any): string[] => {
             const vehicleRoute = route.route_data?.route || [];
             const personIds = new Set<string>();
@@ -3908,26 +3681,11 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               const stopId = routeStop.stop?.id;
               if (!stopId || stopId.includes("-start") || stopId.includes("-end")) return;
               
-              // NEW APPROACH: Find pickup_point by stop_id from database (primary source)
-              let point = pickupPoints.find(p => p.stop_id === stopId);
-              
-              // Fallback: if not found by stop_id, try original point ID extraction
-              if (!point) {
-                const originalPointId = stopId.split('__person_')[0];
-                point = pickupPoints.find(p => p.id === originalPointId);
-              }
-              
-              // Extract person IDs from the pickup_point (primary source)
-              if (point?.person_id) {
-                // person_id might be comma-separated or single value
-                const ids = point.person_id.split(',').map(id => id.trim()).filter(id => id);
-                ids.forEach(id => personIds.add(id));
-              }
-              
-              // Legacy fallback: Extract person IDs from stop ID if encoded (only if not found in point)
-              // This is for backwards compatibility with older optimizations
-              if (!point?.person_id && stopId.includes('__person_')) {
-                // Format: {point.id}__person_{person_id1}__person_{person_id2}...
+              // Extract person IDs from stop ID if encoded
+              // Format: {point.id}__person_{person_id1}__person_{person_id2}...
+              if (stopId.includes('__person_')) {
+                // Match all occurrences of __person_ followed by the person ID
+                // Person ID can contain letters, numbers, hyphens, etc. until next __person_ or end of string
                 const regex = /__person_([^_]+?)(?=__person_|$)/g;
                 let match;
                 while ((match = regex.exec(stopId)) !== null) {
@@ -3936,6 +3694,16 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                     personIds.add(personId);
                   }
                 }
+
+              }
+              
+              // Fallback: check if point has person_id
+              const originalPointId = stopId.split('__person_')[0];
+              const point = pickupPoints.find(p => p.id === originalPointId);
+              if (point?.person_id) {
+                // person_id might be comma-separated or single value
+                const ids = point.person_id.split(',').map(id => id.trim()).filter(id => id);
+                ids.forEach(id => personIds.add(id));
               }
             });
             
@@ -4106,40 +3874,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                           // Count passengers by extracting from route stops
                           const passengers = extractPassengersFromRoute(route);
                           const passengerCount = passengers.length;
-                          
-                          // Get grupo from the route itself (originally assigned group)
-                          // This is the grupo that was assigned when the route was created
-                          const routeGrupo = route.grupo;
-                          
-                          // Also extract grupos from route stops as fallback or additional info
-                          const extractGruposFromRoute = (route: any): string[] => {
-                            const grupos = new Set<string>();
-                            const vehicleRoute = route.route_data?.route || [];
-                            
-                            vehicleRoute.forEach((routeStop: any) => {
-                              const stopId = routeStop.stop?.id;
-                              if (!stopId || stopId.includes("-start") || stopId.includes("-end")) return;
-                              
-                              // Extract original point ID from encoded stop ID
-                              const extractOriginalPointId = (stopId: string): string => {
-                                if (!stopId) return stopId;
-                                const idx = stopId.indexOf('__person_');
-                                return idx > -1 ? stopId.substring(0, idx) : stopId;
-                              };
-                              
-                              const originalPointId = extractOriginalPointId(stopId);
-                              const point = pickupPoints.find(p => p.id === originalPointId);
-                              
-                              if (point?.grupo) {
-                                grupos.add(point.grupo);
-                              }
-                            });
-                            
-                            return Array.from(grupos);
-                          };
-                          
-                          // Use route's grupo if available, otherwise extract from stops
-                          const grupos = routeGrupo ? [routeGrupo] : extractGruposFromRoute(route);
+                          // Get vehicle capacity - use helper function for consistent lookup
+                          const vehicle = getVehicleFromRoute(index, route);
+                          const vehicleCapacity = vehicle?.capacity || 0;
                           
                           // Get distance and duration
                           const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
@@ -4169,24 +3906,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                   style={{ backgroundColor: color }}
                                 />
                                 <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <p className="font-semibold text-sm truncate">{vehicleName}</p>
-                                    {grupos.length > 0 && (
-                                      <div className="flex gap-1 flex-wrap">
-                                        {grupos.map((grupo, idx) => (
-                                          <span 
-                                            key={idx}
-                                            className="px-2 py-0.5 text-xs font-semibold text-purple-700 bg-purple-100 rounded-md border border-purple-300"
-                                          >
-                                            {grupo}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
+                                  <p className="font-semibold text-sm truncate">{vehicleName}</p>
                                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
                                     <div>
-                                      <span className="font-medium">Pasajeros:</span> {passengerCount}
+                                      <span className="font-medium">Pasajeros:</span> {vehicleCapacity > 0 ? `${passengerCount} / ${vehicleCapacity}` : passengerCount}
                                     </div>
                                     <div>
                                       <span className="font-medium">Paradas:</span> {actualStops}
@@ -4232,31 +3955,16 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                           .map((routeStop: any) => {
                             const stopId = routeStop.stop?.id;
                             const isStartPoint = stopId?.includes("-start");
+                            const originalPointId = extractOriginalPointId(stopId);
+                            const point = pickupPoints.find(p => p.id === originalPointId);
                             
-                            // NEW APPROACH: Find pickup_point by stop_id from database (primary source)
-                            let point = pickupPoints.find(p => p.stop_id === stopId);
-                            
-                            // Fallback: if not found by stop_id, try original point ID extraction
-                            if (!point) {
-                              const originalPointId = extractOriginalPointId(stopId);
-                              point = pickupPoints.find(p => p.id === originalPointId);
-                            }
-                            
-                            // Extract person IDs from the pickup_point (primary source)
+                            // Extract person IDs from stop ID if encoded (start points have no passengers)
+                            // Format can be: {point.id}__person_{person_id1}__person_{person_id2}...
                             // Use the same logic as extractPassengersFromRoute for consistency
                             const personIds = new Set<string>();
-                            
-                            // Start points have no passengers, so skip this for start points
-                            if (!isStartPoint && point?.person_id) {
-                              // person_id might be comma-separated
-                              const ids = point.person_id.split(',').map(id => id.trim()).filter(id => id);
-                              ids.forEach(id => personIds.add(id));
-                            }
-                            
-                            // Legacy fallback: Extract person IDs from stop ID if encoded (only if not found in point)
-                            // This is for backwards compatibility with older optimizations
-                            if (!isStartPoint && personIds.size === 0 && stopId.includes('__person_')) {
-                              // Format can be: {point.id}__person_{person_id1}__person_{person_id2}...
+                            if (!isStartPoint && stopId.includes('__person_')) {
+                              // Match all occurrences of __person_ followed by the person ID
+                              // Person ID can contain letters, numbers, hyphens, etc. until next __person_ or end of string
                               const regex = /__person_([^_]+?)(?=__person_|$)/g;
                               let match;
                               while ((match = regex.exec(stopId)) !== null) {
@@ -4265,6 +3973,14 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                   personIds.add(personId);
                                 }
                               }
+                            }
+                            
+                            // Always check if point has person_id (same as extractPassengersFromRoute)
+                            // Start points have no passengers, so skip this for start points
+                            if (!isStartPoint && point?.person_id) {
+                              // person_id might be comma-separated
+                              const ids = point.person_id.split(',').map(id => id.trim()).filter(id => id);
+                              ids.forEach(id => personIds.add(id));
                             }
                             
                             // Get point name - prefer point name, fallback to generic name
@@ -4308,6 +4024,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                         // Count passengers by extracting from route stops
                         const passengers = extractPassengersFromRoute(route);
                         const passengerCount = passengers.length;
+                        // Get vehicle capacity - use helper function for consistent lookup
+                        const vehicle = getVehicleFromRoute(index, route);
+                        const vehicleCapacity = vehicle?.capacity || 0;
                         
                         // Get distance and duration
                         const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
@@ -4321,18 +4040,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                         const durationMin = totalDuration > 60 ? (totalDuration / 60).toFixed(1) : totalDuration.toFixed(0);
                         const durationUnit = totalDuration > 60 ? "min" : "seg";
                         
-                        // Extract grupos from stops in this route detail
-                        const gruposDetail = new Set<string>();
-                        stopsWithDetails.forEach((stop: any) => {
-                          if (!stop.isStartPoint) {
-                            const point = pickupPoints.find(p => p.id === stop.stopId);
-                            if (point?.grupo) {
-                              gruposDetail.add(point.grupo);
-                            }
-                          }
-                        });
-                        const gruposArray = Array.from(gruposDetail);
-                        
                         return (
                           <div className="space-y-3 h-full overflow-y-auto px-3 pb-3">
                             {/* Route Summary Card - Same as route list view */}
@@ -4343,24 +4050,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                   style={{ backgroundColor: color }}
                                 />
                                 <div className="flex-1 min-w-0">
-                                  <div className="flex items-center gap-2 flex-wrap">
-                                    <p className="font-semibold text-sm truncate">{vehicleName}</p>
-                                    {gruposArray.length > 0 && (
-                                      <div className="flex gap-1 flex-wrap">
-                                        {gruposArray.map((grupo, idx) => (
-                                          <span 
-                                            key={idx}
-                                            className="px-2 py-0.5 text-xs font-semibold text-purple-700 bg-purple-100 rounded-md border border-purple-300"
-                                          >
-                                            {grupo}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
+                                  <p className="font-semibold text-sm truncate">{vehicleName}</p>
                                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
                                     <div>
-                                      <span className="font-medium">Pasajeros:</span> {passengerCount}
+                                      <span className="font-medium">Pasajeros:</span> {vehicleCapacity > 0 ? `${passengerCount} / ${vehicleCapacity}` : passengerCount}
                                     </div>
                                     <div>
                                       <span className="font-medium">Paradas:</span> {actualStops}
@@ -4574,3 +4267,4 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
 };
 
 export default Index;
+

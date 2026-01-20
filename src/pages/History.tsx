@@ -668,12 +668,12 @@ const HistoryPage = () => {
                       <>Optimización: {selectedOptimizationRunId.substring(0, 8)}... | {routes.length} ruta(s) de todos los grupos</>
                     ) : (
                       <>ID: {selectedRunId} | {selectedRunData && (selectedRunData.metadata?.created_at || selectedRunData.created_at) && 
-                        new Date(selectedRunData.metadata?.created_at || selectedRunData.created_at).toLocaleString('es-ES', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
+                      new Date(selectedRunData.metadata?.created_at || selectedRunData.created_at).toLocaleString('es-ES', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
                         })}</>
                     )}
                   </p>
@@ -705,10 +705,10 @@ const HistoryPage = () => {
           {/* Optimization Runs from Supabase (grouped by optimization_run_id) */}
           {optimizationRuns.length > 0 && (
             <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <History className="w-5 h-5" />
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <History className="w-5 h-5" />
                     <span>Ejecuciones Anteriores (Todos los Grupos)</span>
                   </div>
                   <Button
@@ -792,98 +792,98 @@ const HistoryPage = () => {
                 <div className="flex items-center gap-2">
                   <History className="w-5 h-5" />
                   <span>Ejecuciones Nextmv</span>
-                </div>
-                <Button
-                  onClick={loadRuns}
-                  variant="outline"
-                  size="sm"
-                  disabled={isLoadingRuns}
-                >
-                  {isLoadingRuns ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Cargando...
-                    </>
-                  ) : (
-                    <>
-                      <History className="w-4 h-4 mr-2" />
-                      Actualizar
-                    </>
-                  )}
+              </div>
+              <Button
+                onClick={loadRuns}
+                variant="outline"
+                size="sm"
+                disabled={isLoadingRuns}
+              >
+                {isLoadingRuns ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Cargando...
+                  </>
+                ) : (
+                  <>
+                    <History className="w-4 h-4 mr-2" />
+                    Actualizar
+                  </>
+                )}
+              </Button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isLoadingRuns ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : runs.length === 0 ? (
+              <div className="text-center py-12">
+                <History className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                <p className="text-sm text-muted-foreground mb-4">
+                  No hay ejecuciones disponibles
+                </p>
+                <Button onClick={() => navigate("/new")} variant="outline">
+                  Crear Nueva Optimización
                 </Button>
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {isLoadingRuns ? (
-                <div className="flex items-center justify-center py-12">
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                </div>
-              ) : runs.length === 0 ? (
-                <div className="text-center py-12">
-                  <History className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
-                  <p className="text-sm text-muted-foreground mb-4">
-                    No hay ejecuciones disponibles
-                  </p>
-                  <Button onClick={() => navigate("/new")} variant="outline">
-                    Crear Nueva Optimización
-                  </Button>
-                </div>
-              ) : (
+              </div>
+            ) : (
                 <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-                  {runs.map((run) => {
-                    const runId = run.id || run.run_id;
-                    const status = run.metadata?.status || run.status || "unknown";
-                    const createdAt = run.metadata?.created_at || run.created_at || "";
-                    const isSelected = selectedRunId === runId;
-                    
-                    const statusDisplay = status === "succeeded" ? "✓ Completado" :
-                                         status === "failed" ? "✗ Fallido" :
-                                         status === "error" ? "✗ Error" :
-                                         status === "running" ? "⟳ Ejecutando" :
-                                         status === "queued" ? "⏳ En cola" :
-                                         status;
-                    
-                    return (
-                      <Card
-                        key={runId}
-                        className={`cursor-pointer transition-colors ${
-                          isSelected
-                            ? "bg-primary text-primary-foreground"
-                            : "hover:bg-muted"
-                        }`}
-                        onClick={() => handleRunSelect(runId)}
-                      >
-                        <CardContent className="p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="flex-1">
-                              <p className="font-semibold text-sm">ID: {runId}</p>
-                              <p className={`text-xs mt-1 ${isSelected ? 'opacity-90' : 'text-muted-foreground'}`}>
-                                {statusDisplay} | {createdAt ? new Date(createdAt).toLocaleString('es-ES', {
-                                  year: 'numeric',
-                                  month: 'short',
-                                  day: 'numeric',
-                                  hour: '2-digit',
-                                  minute: '2-digit'
-                                }) : "Fecha desconocida"}
+                {runs.map((run) => {
+                  const runId = run.id || run.run_id;
+                  const status = run.metadata?.status || run.status || "unknown";
+                  const createdAt = run.metadata?.created_at || run.created_at || "";
+                  const isSelected = selectedRunId === runId;
+                  
+                  const statusDisplay = status === "succeeded" ? "✓ Completado" :
+                                       status === "failed" ? "✗ Fallido" :
+                                       status === "error" ? "✗ Error" :
+                                       status === "running" ? "⟳ Ejecutando" :
+                                       status === "queued" ? "⏳ En cola" :
+                                       status;
+                  
+                  return (
+                    <Card
+                      key={runId}
+                      className={`cursor-pointer transition-colors ${
+                        isSelected
+                          ? "bg-primary text-primary-foreground"
+                          : "hover:bg-muted"
+                      }`}
+                      onClick={() => handleRunSelect(runId)}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1">
+                            <p className="font-semibold text-sm">ID: {runId}</p>
+                            <p className={`text-xs mt-1 ${isSelected ? 'opacity-90' : 'text-muted-foreground'}`}>
+                              {statusDisplay} | {createdAt ? new Date(createdAt).toLocaleString('es-ES', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              }) : "Fecha desconocida"}
                                 <br />
                                 <span className="text-[10px] opacity-75">💡 Click para ver todas las optimizaciones relacionadas</span>
-                              </p>
-                            </div>
-                            {isSelected && isOptimizing && (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            )}
-                            {isSelected && !isOptimizing && (
-                              <span className="text-xs">✓ Seleccionado</span>
-                            )}
+                            </p>
                           </div>
-                        </CardContent>
-                      </Card>
-                    );
-                  })}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+                          {isSelected && isOptimizing && (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          )}
+                          {isSelected && !isOptimizing && (
+                            <span className="text-xs">✓ Seleccionado</span>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
         </div>
       )}
 
@@ -1027,6 +1027,9 @@ const HistoryPage = () => {
                             }).length;
                             const passengers = extractPassengersFromRoute(route);
                             const passengerCount = passengers.length;
+                            // Get vehicle capacity
+                            const vehicle = vehicles.find(v => v.id === route.vehicle_id);
+                            const vehicleCapacity = vehicle?.capacity || 0;
                             const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
                             const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
                             const distanceKm = totalDistance > 1000 ? (totalDistance / 1000).toFixed(2) : totalDistance.toFixed(2);
@@ -1053,8 +1056,8 @@ const HistoryPage = () => {
                                   />
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
-                                      <p className="font-semibold text-sm truncate">
-                                        {vehicles.find(v => v.id === route.vehicle_id)?.name || `Ruta ${index + 1}`}
+                                    <p className="font-semibold text-sm truncate">
+                                        {vehicle?.name || `Ruta ${index + 1}`}
                                       </p>
                                       {routeGrupo && (
                                         <span className="px-2 py-0.5 text-xs font-semibold text-purple-700 bg-purple-100 rounded-md border border-purple-300">
@@ -1064,7 +1067,7 @@ const HistoryPage = () => {
                                     </div>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
                                       <div>
-                                        <span className="font-medium">Pasajeros:</span> {passengerCount}
+                                        <span className="font-medium">Pasajeros:</span> {vehicleCapacity > 0 ? `${passengerCount} / ${vehicleCapacity}` : passengerCount}
                                       </div>
                                       <div>
                                         <span className="font-medium">Paradas:</span> {actualStops}
@@ -1119,7 +1122,7 @@ const HistoryPage = () => {
                               
                               // Fallback: if not found by stop_id, try original point ID extraction
                               if (!point) {
-                                const originalPointId = extractOriginalPointId(stopId);
+                              const originalPointId = extractOriginalPointId(stopId);
                                 point = pickupPoints.find(p => p.id === originalPointId);
                               }
                               
@@ -1181,6 +1184,9 @@ const HistoryPage = () => {
                           
                           const passengers = extractPassengersFromRoute(selectedRoute);
                           const passengerCount = passengers.length;
+                          // Get vehicle capacity
+                          const vehicle = vehicles.find(v => v.id === selectedRoute.vehicle_id);
+                          const vehicleCapacity = vehicle?.capacity || 0;
                           
                           const totalDistance = selectedRoute.total_distance || selectedRoute.route_data?.route_travel_distance || 0;
                           const totalDuration = selectedRoute.total_duration || selectedRoute.route_data?.route_travel_duration || 0;
@@ -1203,7 +1209,7 @@ const HistoryPage = () => {
                                     <p className="font-semibold text-sm truncate">{vehicleName}</p>
                                     <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
                                       <div>
-                                        <span className="font-medium">Pasajeros:</span> {passengerCount}
+                                        <span className="font-medium">Pasajeros:</span> {vehicleCapacity > 0 ? `${passengerCount} / ${vehicleCapacity}` : passengerCount}
                                       </div>
                                       <div>
                                         <span className="font-medium">Paradas:</span> {actualStops}
