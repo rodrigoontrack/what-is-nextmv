@@ -3037,7 +3037,6 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       if (runId) {
         console.log("Fetching run result for ID:", runId);
         
-        // Build the GET URL for the run
         const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
         
         // Poll for the result every 10 seconds until solution is available
