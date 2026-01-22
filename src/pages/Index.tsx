@@ -145,27 +145,23 @@ const Index = () => {
     setIsLoadingRuns(true);
     try {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      // Use Supabase Edge Function as proxy
-      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-      const runsApiUrl = `${SUPABASE_URL}/functions/v1/nextmv-proxy/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
-      
-      const response = await fetch(runsApiUrl, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
+      // Use Supabase Edge Function via supabase.functions.invoke() for proper authentication
+      const { data, error: invokeError } = await supabase.functions.invoke('nextmv-proxy', {
+        body: {
+          path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs`,
+          method: 'GET'
+        }
       });
       
-      if (!response.ok) {
-        throw new Error(`Failed to load runs: ${response.status} ${response.statusText}`);
+      if (invokeError) {
+        throw new Error(`Failed to load runs: ${invokeError.message}`);
       }
       
-      const data = await response.json();
+      if (!data) {
+        throw new Error('No data returned from function');
+      }
+      
       // Handle both array and object with runs property
       const runsList = Array.isArray(data) ? data : (data.runs || data.items || []);
       
