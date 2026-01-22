@@ -199,25 +199,21 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      // Use Supabase Edge Function as proxy
-      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-      const runApiUrl = `${SUPABASE_URL}/functions/v1/nextmv-proxy/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-      
-      const response = await fetch(runApiUrl, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
+      // Use Supabase Edge Function via supabase.functions.invoke()
+      const { data: runData, error: invokeError } = await supabase.functions.invoke('nextmv-proxy', {
+        body: {
+          path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`,
+          method: 'GET'
+        }
       });
       
-      if (!response.ok) {
-        throw new Error(`Failed to load run: ${response.status} ${response.statusText}`);
+      if (invokeError) {
+        throw new Error(`Failed to load run: ${invokeError.message}`);
       }
       
-      const runData = await response.json();
+      if (!runData) {
+        throw new Error('No data returned from function');
+      }
       console.log("Loaded run data:", runData);
       
       // Store the run data for display
@@ -2778,74 +2774,50 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       });
       
       // Call Nextmv API through Supabase Edge Function (to avoid CORS issues)
-      let response: Response;
       let responseData: any;
       
       try {
-        // Add timeout to prevent hanging (30 seconds)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => {
-          controller.abort();
-        }, 30000);
+        // Use Supabase Edge Function via supabase.functions.invoke() for proper authentication
+        const requestBodyString = JSON.stringify(cleanPayload);
         
-        try {
-          // Use Supabase Edge Function as proxy
-          const apiUrl = nextmvEndpoint;
-          
-          // Convert to JSON string for the request
-          const requestBodyString = JSON.stringify(cleanPayload);
-          
-          // Verify JSON is valid
-          try {
-            JSON.parse(requestBodyString);
-          } catch (e) {
-            throw new Error(`Invalid JSON payload: ${e}`);
-          }
-          
-          console.log("Sending JSON request to Nextmv:", {
-            url: apiUrl,
-            method: "POST",
-            contentType: "application/json",
-            bodyLength: requestBodyString.length,
-            bodyPreview: requestBodyString.substring(0, 500),
-            fullBody: requestBodyString
-          });
-          
-          response = await fetch(apiUrl, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-              "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-              "Content-Type": "application/json",
-              "Accept": "application/json",
-            },
-            body: requestBodyString,
-            signal: controller.signal
-          });
-        } finally {
-          clearTimeout(timeoutId);
-        }
-        
-        // Try to parse response body regardless of status
-        const responseText = await response.text();
-        try {
-          responseData = JSON.parse(responseText);
-        } catch (parseError) {
-          // If parsing fails, use the raw text
-          responseData = { raw: responseText };
-        }
-        
-        console.log("Nextmv API response:", {
-          status: response.status,
-          statusText: response.statusText,
-          data: responseData,
-          ok: response.ok
+        console.log("Sending JSON request to Nextmv via Supabase Edge Function:", {
+          path: nextmvPath,
+          bodyLength: requestBodyString.length,
+          bodyPreview: requestBodyString.substring(0, 500),
         });
         
-        // If response is not ok, treat it as an error
-        if (!response.ok) {
+        // Use supabase.functions.invoke() which handles authentication automatically
+        // Pass path and body in the invoke body
+        const { data, error: invokeError } = await supabase.functions.invoke('nextmv-proxy', {
+          body: {
+            path: nextmvPath,
+            method: 'POST',
+            body: cleanPayload
+          }
+        });
+        
+        if (invokeError) {
+          throw new Error(`Supabase function error: ${invokeError.message}`);
+        }
+        
+        if (!data) {
+          throw new Error('No data returned from function');
+        }
+        
+        // Data is already parsed from supabase.functions.invoke()
+        responseData = data;
+        
+        console.log("Nextmv API response:", {
+          status: 200,
+          statusText: "OK",
+          data: responseData,
+          ok: true
+        });
+        
+        // Check if response indicates an error
+        if (responseData.error || (responseData.code && responseData.code !== 200)) {
           // Special handling for 400 Bad Request - show detailed error information
-          if (response.status === 400) {
+          if (responseData.code === 400) {
             let errorMessage = "Error de validación en la solicitud";
             let errorDetails: any = null;
             const errorParts: string[] = [];
@@ -2926,12 +2898,11 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               
               // Log full error details for debugging
               console.error("Nextmv API returned 400 Bad Request (FULL DETAILS):", {
-                status: response.status,
-                statusText: response.statusText,
+                status: responseData.code || 400,
+                statusText: responseData.message || "Bad Request",
                 errorMessage,
                 fullResponse: responseData,
                 errorDetails: errorDetails,
-                responseHeaders: Object.fromEntries(response.headers.entries()),
                 parsedErrorParts: errorParts
               });
               
@@ -2943,7 +2914,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               throw new Error(detailedErrorMessage);
             } else {
               // No response data, use status text
-              throw new Error(`Error 400: ${response.statusText || 'Bad Request'}\n\nNo se recibieron detalles adicionales del servidor.`);
+              throw new Error(`Error 400: Bad Request\n\nNo se recibieron detalles adicionales del servidor.`);
             }
           } else {
             // Handle other error status codes
@@ -2972,24 +2943,21 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               // If we have any response data, show it
               errorMessage = JSON.stringify(responseData);
               errorDetails = responseData;
-            } else if (response.statusText) {
-              errorMessage = `${response.status} ${response.statusText}`;
             } else {
-              errorMessage = `Error ${response.status}: La API de Nextmv retornó un código de error`;
+              errorMessage = `Error: La API de Nextmv retornó un código de error`;
             }
             
             // Log full error details for debugging
             console.error("Nextmv API returned error (FULL DETAILS):", {
-              status: response.status,
-              statusText: response.statusText,
+              code: responseData?.code,
+              message: responseData?.message,
               errorMessage,
               fullResponse: responseData,
               errorDetails: errorDetails,
-              responseHeaders: Object.fromEntries(response.headers.entries())
             });
             
             // Build a detailed error message
-            let detailedErrorMessage = `Error ${response.status}: ${errorMessage}`;
+            let detailedErrorMessage = `Error ${responseData?.code || 'Unknown'}: ${errorMessage}`;
             
             if (errorDetails) {
               // Add specific error details if available
@@ -3075,21 +3043,21 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           attempts++;
           
           try {
-            const runResponse = await fetch(runApiUrl, {
-              method: "GET",
-              headers: {
-                "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-              },
+            // Use Supabase Edge Function via supabase.functions.invoke()
+            const { data: runData, error: invokeError } = await supabase.functions.invoke('nextmv-proxy', {
+              body: {
+                path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`,
+                method: 'GET'
+              }
             });
             
-            if (!runResponse.ok) {
-              const errorText = await runResponse.text();
-              throw new Error(`Error fetching run: ${runResponse.status} ${runResponse.statusText} - ${errorText}`);
+            if (invokeError) {
+              throw new Error(`Error fetching run: ${invokeError.message}`);
             }
             
-            const runData = await runResponse.json();
+            if (!runData) {
+              throw new Error('No data returned from function');
+            }
             console.log(`Run status (attempt ${attempts}):`, runData);
             
             // Check metadata.status to determine if run is complete

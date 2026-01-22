@@ -22,24 +22,59 @@ serve(async (req) => {
     // Don't validate authentication - Supabase will handle it
     // Just proceed with the proxy request
     const url = new URL(req.url);
-    // Strip the function prefix to forward only the Nextmv path
-    const forwardedPath = url.pathname.replace(/^\/?nextmv-proxy/, "") || "/";
+    
+    // Get path from URL or from request body (for invoke calls)
+    let forwardedPath = url.pathname.replace(/^\/?nextmv-proxy/, "") || "/";
+    let requestBody: any = null;
+    
+    // If path is empty, try to get it from request body (when called via functions.invoke)
+    let httpMethod = req.method;
+    if (forwardedPath === "/" && req.method === "POST") {
+      try {
+        const bodyJson = await req.json();
+        if (bodyJson.path) {
+          forwardedPath = bodyJson.path;
+        }
+        if (bodyJson.method) {
+          httpMethod = bodyJson.method;
+        }
+        if (bodyJson.body) {
+          requestBody = bodyJson.body;
+        } else if (httpMethod === "GET" || httpMethod === "HEAD") {
+          requestBody = undefined;
+        }
+      } catch {
+        // If parsing fails, use original body
+        requestBody = await req.arrayBuffer();
+      }
+    } else {
+      requestBody = req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
+    }
+    
     const targetUrl = `${NEXTMV_API_BASE}${forwardedPath}${url.search}`;
-
-    const body =
-      req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer();
 
     // Forward original headers but override auth with the server-side key
     const outgoingHeaders = new Headers(req.headers);
     outgoingHeaders.set("Authorization", `Bearer ${NEXTMV_API_KEY}`);
+    outgoingHeaders.set("Content-Type", "application/json");
     outgoingHeaders.delete("host");
     outgoingHeaders.delete("connection");
     outgoingHeaders.delete("apikey"); // Remove apikey before forwarding to NextMV
 
+    // Convert body to appropriate format
+    let finalBody: BodyInit | undefined = undefined;
+    if (requestBody && (httpMethod === "POST" || httpMethod === "PUT" || httpMethod === "PATCH")) {
+      if (typeof requestBody === 'object' && !(requestBody instanceof ArrayBuffer)) {
+        finalBody = JSON.stringify(requestBody);
+      } else if (requestBody instanceof ArrayBuffer) {
+        finalBody = requestBody;
+      }
+    }
+    
     const response = await fetch(targetUrl, {
-      method: req.method,
+      method: httpMethod,
       headers: outgoingHeaders,
-      body,
+      body: finalBody,
     });
 
     // Copy response headers and apply CORS
