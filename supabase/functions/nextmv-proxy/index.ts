@@ -19,6 +19,22 @@ serve(async (req) => {
   }
 
   try {
+    // Get the apikey from headers (Supabase uses this for public functions)
+    const apikey = req.headers.get("apikey");
+    const authHeader = req.headers.get("authorization");
+    
+    // If no apikey or authorization header, return 401
+    // But we'll accept either apikey or authorization with anon key
+    if (!apikey && !authHeader) {
+      return new Response(
+        JSON.stringify({ error: "Missing apikey or authorization header" }),
+        {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
     const url = new URL(req.url);
     // Strip the function prefix to forward only the Nextmv path
     const forwardedPath = url.pathname.replace(/^\/?nextmv-proxy/, "") || "/";
@@ -32,6 +48,7 @@ serve(async (req) => {
     outgoingHeaders.set("Authorization", `Bearer ${NEXTMV_API_KEY}`);
     outgoingHeaders.delete("host");
     outgoingHeaders.delete("connection");
+    outgoingHeaders.delete("apikey"); // Remove apikey before forwarding to NextMV
 
     const response = await fetch(targetUrl, {
       method: req.method,
