@@ -2,3 +2,6 @@ project_id = "hfirvmmpemmrubtrznvm"
 
 [functions.optimize-routes]
 verify_jwt = false
+
+[functions.nextmv-proxy]
+verify_jwt = false
