@@ -147,13 +147,14 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      // Always use proxy to avoid CORS issues (works in both dev and production)
-      const runsApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
+      // Use Supabase Edge Function as proxy
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const runsApiUrl = `${SUPABASE_URL}/functions/v1/nextmv-proxy/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
       
       const response = await fetch(runsApiUrl, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -197,13 +198,14 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      // Always use proxy to avoid CORS issues
-      const runApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
+      // Use Supabase Edge Function as proxy
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const runApiUrl = `${SUPABASE_URL}/functions/v1/nextmv-proxy/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
       
       const response = await fetch(runApiUrl, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -2691,9 +2693,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     console.log("Cleaned payload (no undefined values):", JSON.stringify(cleanPayload, null, 2));
 
     // Store the JSON and endpoint to display (use cleaned version)
-    const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
-    const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Always use proxy to avoid CORS
-    const nextmvFullUrl = "https://api.cloud.nextmv.io" + nextmvPath; // Full URL for display
+      const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const nextmvEndpoint = `${SUPABASE_URL}/functions/v1/nextmv-proxy${nextmvPath}`; // Use Supabase Edge Function
+      const nextmvFullUrl = "https://api.cloud.nextmv.io" + nextmvPath; // Full URL for display
 
     return {
       payload: cleanPayload,
@@ -2760,7 +2763,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       setNextmvJson(cleanPayload);
       setNextmvEndpoint(nextmvFullUrl);
       const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
-      const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Always use proxy to avoid CORS
+      
+      // Use Supabase Edge Function as proxy to avoid CORS issues
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const nextmvEndpoint = `${SUPABASE_URL}/functions/v1/nextmv-proxy${nextmvPath}`;
       
       console.log("Calling Nextmv API:", {
         endpoint: nextmvEndpoint,
@@ -2769,14 +2775,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         vehiclesCount: vehicles.length,
       });
       
-      // Get Nextmv API key from environment or use fallback
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
-      
-      if (!NEXTMV_API_KEY) {
-        throw new Error("VITE_NEXTMV_API_KEY no está configurado. Por favor, configura tu API key de Nextmv.");
-      }
-      
-      // Call Nextmv API through proxy (to avoid CORS issues)
+      // Call Nextmv API through Supabase Edge Function (to avoid CORS issues)
       let response: Response;
       let responseData: any;
       
@@ -2788,11 +2787,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         }, 30000);
         
         try {
-          // Always use proxy to avoid CORS issues (works in both dev and production)
-          // Force use of proxy endpoint, never use direct URL
-          const apiUrl = nextmvEndpoint.startsWith('/api/nextmv') 
-            ? nextmvEndpoint 
-            : `/api/nextmv${nextmvPath}`;
+          // Use Supabase Edge Function as proxy
+          const apiUrl = nextmvEndpoint;
           
           // Convert to JSON string for the request
           const requestBodyString = JSON.stringify(cleanPayload);
@@ -2816,7 +2812,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           response = await fetch(apiUrl, {
             method: "POST",
             headers: {
-              "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+              "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
               "Content-Type": "application/json",
               "Accept": "application/json",
             },
@@ -3079,7 +3075,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             const runResponse = await fetch(runApiUrl, {
               method: "GET",
               headers: {
-                "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+                "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
               },

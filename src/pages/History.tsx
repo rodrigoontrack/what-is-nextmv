@@ -245,13 +245,14 @@ const HistoryPage = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      // Always use proxy to avoid CORS issues (works in both dev and production)
-      const runsApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
+      // Use Supabase Edge Function as proxy
+      const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+      const runsApiUrl = `${SUPABASE_URL}/functions/v1/nextmv-proxy/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
       
       const response = await fetch(runsApiUrl, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -360,13 +361,14 @@ const HistoryPage = () => {
           const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
           const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
           
-          // Always use proxy to avoid CORS issues
-          const runApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
+          // Use Supabase Edge Function as proxy
+          const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+          const runApiUrl = `${SUPABASE_URL}/functions/v1/nextmv-proxy/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
           
           const response = await fetch(runApiUrl, {
             method: "GET",
             headers: {
-              "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+              "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
               "Content-Type": "application/json",
               "Accept": "application/json",
             },
@@ -401,7 +403,7 @@ const HistoryPage = () => {
       const response = await fetch(runApiUrl, {
         method: "GET",
         headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
+          "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
