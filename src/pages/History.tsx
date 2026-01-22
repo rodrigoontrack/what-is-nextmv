@@ -250,6 +250,10 @@ const HistoryPage = () => {
         body: {
           path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs`,
           method: 'GET'
+        },
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
         }
       });
       
@@ -363,6 +367,10 @@ const HistoryPage = () => {
             body: {
               path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`,
               method: 'GET'
+            },
+            headers: {
+              'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+              'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
             }
           });
           
@@ -393,6 +401,10 @@ const HistoryPage = () => {
         body: {
           path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`,
           method: 'GET'
+        },
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
         }
       });
       

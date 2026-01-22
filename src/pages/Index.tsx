@@ -151,6 +151,10 @@ const Index = () => {
         body: {
           path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs`,
           method: 'GET'
+        },
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
         }
       });
       
@@ -200,6 +204,10 @@ const Index = () => {
         body: {
           path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`,
           method: 'GET'
+        },
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
         }
       });
       
@@ -2784,11 +2792,16 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         
         // Use supabase.functions.invoke() which handles authentication automatically
         // Pass path and body in the invoke body
+        // Use the anon key explicitly to ensure authentication works
         const { data, error: invokeError } = await supabase.functions.invoke('nextmv-proxy', {
           body: {
             path: nextmvPath,
             method: 'POST',
             body: cleanPayload
+          },
+          headers: {
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+            'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
           }
         });
         
@@ -3044,6 +3057,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               body: {
                 path: `/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`,
                 method: 'GET'
+              },
+              headers: {
+                'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+                'apikey': import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || ''
               }
             });
             
