@@ -147,8 +147,8 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      const runsUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
-      const runsApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs` : runsUrl;
+      // Always use proxy to avoid CORS issues (works in both dev and production)
+      const runsApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
       
       const response = await fetch(runsApiUrl, {
         method: "GET",
@@ -197,8 +197,8 @@ const Index = () => {
       const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
       const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
       
-      const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-      const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
+      // Always use proxy to avoid CORS issues
+      const runApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
       
       const response = await fetch(runApiUrl, {
         method: "GET",
@@ -2692,7 +2692,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
 
     // Store the JSON and endpoint to display (use cleaned version)
     const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
-    const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Use proxy in development
+    const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Always use proxy to avoid CORS
     const nextmvFullUrl = "https://api.cloud.nextmv.io" + nextmvPath; // Full URL for display
 
     return {
@@ -2760,7 +2760,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       setNextmvJson(cleanPayload);
       setNextmvEndpoint(nextmvFullUrl);
       const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
-      const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Use proxy in development
+      const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Always use proxy to avoid CORS
       
       console.log("Calling Nextmv API:", {
         endpoint: nextmvEndpoint,
@@ -3060,8 +3060,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         
         // Build the GET URL for the run
         const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-        const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-        const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
+        // Always use proxy to avoid CORS issues
+        const runApiUrl = `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
         
         // Poll for the result every 10 seconds until solution is available
         const pollInterval = 10000; // Poll every 10 seconds
