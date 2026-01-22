@@ -253,6 +253,7 @@ const HistoryPage = () => {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -369,6 +370,7 @@ const HistoryPage = () => {
             method: "GET",
             headers: {
               "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+              "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
               "Content-Type": "application/json",
               "Accept": "application/json",
             },

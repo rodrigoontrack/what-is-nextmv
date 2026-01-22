@@ -155,6 +155,7 @@ const Index = () => {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -206,6 +207,7 @@ const Index = () => {
         method: "GET",
         headers: {
           "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
           "Content-Type": "application/json",
           "Accept": "application/json",
         },
@@ -2813,6 +2815,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             method: "POST",
             headers: {
               "Authorization": `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+              "apikey": `${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
               "Content-Type": "application/json",
               "Accept": "application/json",
             },
