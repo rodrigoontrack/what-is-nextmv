@@ -105,6 +105,10 @@ const Index = () => {
         // person_id might be comma-separated
         const ids = point.person_id.split(',').map(id => id.trim()).filter(id => id);
         ids.forEach(id => personIds.add(id));
+      } else {
+        // If no person_id is assigned, count the point itself as 1 passenger
+        // Use point ID as a unique identifier for counting
+        personIds.add(point.id);
       }
     });
     return personIds.size;

@@ -159,15 +159,15 @@ const PickupPointForm = ({ onAdd, editingPoint, onCancelEdit }: PickupPointFormP
             />
           </div>
           <div>
-            <Label htmlFor="person_id">ID Persona (Opcional)</Label>
+            <Label htmlFor="person_id">ID Pasajero (Opcional)</Label>
             <Input
               id="person_id"
               value={personId}
               onChange={(e) => setPersonId(e.target.value)}
-              placeholder="Ej: PER-001"
+              placeholder="Ej: PER-001, PER-002 (separados por coma para múltiples)"
             />
             <p className="text-xs text-muted-foreground mt-1">
-              Identificador único de la persona a recoger en este punto
+              Si no especificas un ID, este punto contará como 1 pasajero. Si especificas IDs (separados por coma), se contarán esos pasajeros específicos.
             </p>
           </div>
           <div>
