@@ -62,7 +62,26 @@ This project is built with:
 
 ## How can I deploy this project?
 
-Simply open [Lovable](https://lovable.dev/projects/78f4098e-c2aa-43b9-96ba-83ac7bb596df) and click on Share -> Publish.
+### 🚀 Despliegue en Vercel (La opción más sencilla)
+
+**Ver la guía completa en [DEPLOY.md](./DEPLOY.md)**
+
+**Resumen rápido:**
+1. Sube tu código a GitHub
+2. Ve a [vercel.com](https://vercel.com) e inicia sesión con GitHub
+3. Haz clic en "Add New Project" y selecciona tu repositorio
+4. Agrega las variables de entorno:
+   - `VITE_SUPABASE_URL`
+   - `VITE_SUPABASE_PUBLISHABLE_KEY`
+   - `VITE_NEXTMV_API_KEY`
+5. Haz clic en "Deploy"
+6. ¡Listo! 🎉
+
+**Nota**: Vercel detectará automáticamente que es un proyecto Vite y lo configurará correctamente.
+
+### Otras opciones
+
+- **Lovable**: Simply open [Lovable](https://lovable.dev/projects/78f4098e-c2aa-43b9-96ba-83ac7bb596df) and click on Share -> Publish.
 
 ## Can I connect a custom domain to my Lovable project?
 

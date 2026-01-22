@@ -2788,8 +2788,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         }, 30000);
         
         try {
-          // Use proxy endpoint in development, direct URL in production (if CORS allows)
-          const apiUrl = import.meta.env.DEV ? nextmvEndpoint : nextmvFullUrl;
+          // Always use proxy to avoid CORS issues (works in both dev and production)
+          const apiUrl = nextmvEndpoint;
           
           // Convert to JSON string for the request
           const requestBodyString = JSON.stringify(cleanPayload);
