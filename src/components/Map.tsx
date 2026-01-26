@@ -419,6 +419,53 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
         .addTo(map.current!);
       markersRef.current.push(marker);
     });
+    
+    // Add end point markers for vehicles that have end locations
+    routes.forEach((route: any, routeIndex: number) => {
+      // Try to get vehicle from route
+      let vehicle: any = null;
+      if (route.vehicle_id && vehicles.length > 0) {
+        vehicle = vehicles.find((v: any) => v.id === route.vehicle_id);
+      }
+      
+      // Check for end location from vehicle (Supabase or local)
+      if (vehicle) {
+        let endLocation: { lon: number; lat: number } | null = null;
+        
+        // Try Supabase vehicle data first (end_latitude, end_longitude)
+        if (vehicle.end_latitude != null && vehicle.end_longitude != null) {
+          endLocation = {
+            lon: Number(vehicle.end_longitude),
+            lat: Number(vehicle.end_latitude)
+          };
+        }
+        // Fallback to local vehicle end_location
+        else if (vehicle.end_location) {
+          endLocation = vehicle.end_location;
+        }
+        
+        // Create marker for end point if available
+        if (endLocation && map.current) {
+          const routeColor = routeColors[routeIndex % routeColors.length];
+          const el = document.createElement('div');
+          el.className = 'end-point-marker';
+          el.style.width = '20px';
+          el.style.height = '20px';
+          el.style.borderRadius = '50%';
+          el.style.backgroundColor = routeColor;
+          el.style.border = '3px solid white';
+          el.style.boxShadow = '0 2px 4px rgba(0,0,0,0.3)';
+          el.style.cursor = 'pointer';
+          el.title = 'Punto de fin';
+          
+          const marker = new mapboxgl.Marker(el)
+            .setLngLat([endLocation.lon, endLocation.lat])
+            .addTo(map.current);
+          
+          markersRef.current.push(marker);
+        }
+      }
+    });
 
     // Draw routes - filter to match legend: one route per vehicle with valid coordinates
     // Routes structure: route_data.route[] where each item has stop.location.{lon, lat}
@@ -491,7 +538,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       
       // Collect route coordinates from filtered routes
       // Store both coordinates and original route index to maintain mapping
-      const vehicleRoutes: { coordinates: number[][]; originalIndex: number }[] = [];
+      const vehicleRoutes: { coordinates: number[][]; originalIndex: number; route: any }[] = [];
       
       uniqueVehicleRoutes.forEach(({ route, index: originalIndex }) => {
         const vehicleRoute = route.route_data?.route || [];
@@ -506,8 +553,37 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
           }
         });
         
+        // Add end point if vehicle has one
+        // Try to get vehicle from route
+        let vehicle: any = null;
+        if (route.vehicle_id && vehicles.length > 0) {
+          vehicle = vehicles.find((v: any) => v.id === route.vehicle_id);
+        }
+        
+        // Check for end location from vehicle (Supabase or local)
+        if (vehicle) {
+          let endLocation: { lon: number; lat: number } | null = null;
+          
+          // Try Supabase vehicle data first (end_latitude, end_longitude)
+          if (vehicle.end_latitude != null && vehicle.end_longitude != null) {
+            endLocation = {
+              lon: Number(vehicle.end_longitude),
+              lat: Number(vehicle.end_latitude)
+            };
+          }
+          // Fallback to local vehicle end_location
+          else if (vehicle.end_location) {
+            endLocation = vehicle.end_location;
+          }
+          
+          // Add end point to coordinates if available
+          if (endLocation) {
+            coordinates.push([endLocation.lon, endLocation.lat]);
+          }
+        }
+        
         if (coordinates.length > 0) {
-          vehicleRoutes.push({ coordinates, originalIndex });
+          vehicleRoutes.push({ coordinates, originalIndex, route });
         } else {
           console.warn(`Route ${originalIndex} has no valid coordinates after filtering. Route data:`, route.route_data);
         }
@@ -538,7 +614,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       // Draw route lines using Mapbox Directions API to get actual street routes
       // Use async function to handle API calls
       (async () => {
-        await Promise.all(vehicleRoutes.map(async ({ coordinates, originalIndex }, vehicleIndex) => {
+        await Promise.all(vehicleRoutes.map(async ({ coordinates, originalIndex, route }, vehicleIndex) => {
         const sourceId = `route-${originalIndex}`;
         const layerId = `route-${originalIndex}`;
         const routeColor = routeColors[originalIndex % routeColors.length]; // Cycle through colors

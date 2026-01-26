@@ -23,6 +23,7 @@ interface PickupPoint {
   quantity?: number;
   person_id?: string;
   grupo?: string;
+  all_nombres?: string[]; // All passenger names when quantity >= 2
 }
 
 interface PickupPointsListProps {
@@ -78,6 +79,22 @@ const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPoin
                     </span>
                   )}
                 </div>
+                {/* Show all passenger names when quantity >= 2 */}
+                {point.quantity && point.quantity >= 2 && point.all_nombres && point.all_nombres.length > 0 && (
+                  <div className="mt-1 space-y-1">
+                    <p className="text-xs font-semibold text-muted-foreground">Pasajeros:</p>
+                    <div className="flex flex-wrap gap-1">
+                      {point.all_nombres.map((nombre, idx) => (
+                        <span
+                          key={idx}
+                          className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded font-medium"
+                        >
+                          {nombre}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <p className="text-xs text-muted-foreground mt-1">
                   {typeof point.latitude === 'number' ? point.latitude : String(point.latitude)}, {typeof point.longitude === 'number' ? point.longitude : String(point.longitude)}
                 </p>

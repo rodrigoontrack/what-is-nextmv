@@ -220,8 +220,20 @@ const HistoryPage = () => {
         // Keep existing points if none found for this run
       }
 
-      setRoutes(routesData);
-      setVisibleRoutes(new Set(routesData.map((_, index) => index)));
+      // Transform routes to include total_distance and total_duration from distance and time fields
+      const transformedRoutes = routesData.map((route: any) => ({
+        ...route,
+        total_distance: route.distance ? Number(route.distance) : 0,
+        total_duration: route.time ? Number(route.time) : 0,
+        route_data: {
+          ...route.route_data,
+          route_travel_distance: route.distance ? Number(route.distance) : 0,
+          route_travel_duration: route.time ? Number(route.time) : 0,
+        }
+      }));
+      
+      setRoutes(transformedRoutes);
+      setVisibleRoutes(new Set(transformedRoutes.map((_, index) => index)));
 
       toast({
         title: "Ejecución cargada",
@@ -242,37 +254,40 @@ const HistoryPage = () => {
   const loadRuns = async () => {
     setIsLoadingRuns(true);
     try {
-      const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
+      // Load optimizations from Supabase instead of Nextmv API
+      const { data: optimizationsData, error } = await supabase
+        .from("optimizations")
+        .select("*")
+        .order("created_at", { ascending: false });
       
-      const runsUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
-      const runsApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs` : runsUrl;
-      
-      const response = await fetch(runsApiUrl, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to load runs: ${response.status} ${response.statusText}`);
+      if (error) {
+        throw error;
       }
       
-      const data = await response.json();
-      const runsList = Array.isArray(data) ? data : (data.runs || data.items || []);
-      
-      const sortedRuns = runsList.sort((a: any, b: any) => {
-        const dateA = new Date(a.metadata?.created_at || a.created_at || 0).getTime();
-        const dateB = new Date(b.metadata?.created_at || b.created_at || 0).getTime();
-        return dateB - dateA;
+      // Transform Supabase optimizations to match expected format
+      const runsList = (optimizationsData || []).map((opt: any) => {
+        // Extract status from result_json if available
+        const resultJson = opt.result_json || {};
+        const status = resultJson.metadata?.status || resultJson.status || "succeeded";
+        
+        return {
+          id: opt.nextmv_id,
+          optimization_id: opt.id, // Store Supabase ID for loading routes
+          metadata: {
+            created_at: opt.created_at,
+            id: opt.nextmv_id,
+            status: status
+          },
+          created_at: opt.created_at,
+          status: status,
+          result_json: opt.result_json // Store the full result JSON
+        };
       });
       
-      setRuns(sortedRuns);
+      setRuns(runsList);
+      console.log(`Loaded ${runsList.length} optimizations from Supabase`);
     } catch (error) {
-      console.error("Error loading runs:", error);
+      console.error("Error loading optimizations:", error);
       toast({
         title: "Error",
         description: "No se pudieron cargar las ejecuciones anteriores",
@@ -289,242 +304,134 @@ const HistoryPage = () => {
     setIsOptimizing(true);
     
     try {
-      // First, try to find routes in Supabase that are linked to this Nextmv run ID
-      // This will load all routes from all groups that were optimized together
-      // Use PostgREST array contains operator: .cs (contains) or .cd (contained by)
-      let finalRoutesData: any[] | null = null;
-      let routesError: any = null;
+      // Find the optimization in the runs list to get the Supabase ID
+      const selectedRun = runs.find(r => r.id === runId || r.optimization_id === runId);
+      let optimizationId = selectedRun?.optimization_id;
       
-      // Try querying with array contains - check if nextmv_run_ids array contains the runId
-      const { data: routesData, error: routesError1 } = await supabase
+      // Load optimization from Supabase - try by ID first, then by nextmv_id
+      let optimizationData: any = null;
+      
+      if (optimizationId) {
+        const { data, error } = await supabase
+          .from("optimizations")
+          .select("*")
+          .eq("id", optimizationId)
+          .single();
+        
+        if (!error && data) {
+          optimizationData = data;
+        }
+      }
+      
+      // If not found by ID, try by nextmv_id
+      if (!optimizationData) {
+        const { data, error } = await supabase
+          .from("optimizations")
+          .select("*")
+          .eq("nextmv_id", runId)
+          .single();
+        
+        if (error) {
+          throw new Error(`No se encontró la optimización: ${error.message}`);
+        }
+        
+        optimizationData = data;
+        optimizationId = data.id;
+      }
+      
+      console.log(`Loading optimization ${optimizationId} from Supabase...`);
+      setSelectedRunData(optimizationData?.result_json || optimizationData);
+      
+      // Load routes with stops and passengers from Supabase
+      const { data: routesData, error: routesError } = await supabase
         .from("routes")
-        .select("*")
-        .contains("nextmv_run_ids", [runId]) // Check if array contains the runId
+        .select(`
+          *,
+          fk_vehicle:vehicles(*),
+          stops:stops(
+            *,
+            fk_pickup_point:pickup_points(*),
+            passengers:stop_passenger(
+              fk_passenger:passengers(*)
+            )
+          )
+        `)
+        .eq("fk_optimization", optimizationId)
         .order("created_at", { ascending: false });
       
-      if (!routesError1 && routesData && routesData.length > 0) {
-        finalRoutesData = routesData;
-      } else {
-        // Try alternative syntax using filter with cs (contains) operator
-        const { data: altRoutesData, error: altError } = await supabase
-          .from("routes")
-          .select("*")
-          .filter("nextmv_run_ids", "cs", `{${runId}}`) // Contains operator: array contains value
-          .order("created_at", { ascending: false });
-        
-        if (!altError && altRoutesData && altRoutesData.length > 0) {
-          finalRoutesData = altRoutesData;
-        } else {
-          routesError = altError || routesError1;
-        }
+      if (routesError) {
+        throw new Error(`Error cargando rutas: ${routesError.message}`);
       }
-
-      if (!routesError && finalRoutesData && finalRoutesData.length > 0) {
-        // Found routes linked to this Nextmv run
-        // Now, we need to find ALL routes from the same optimization session
-        // All routes from the same optimization will share the same optimization_run_id
-        const firstRoute = finalRoutesData[0];
-        const optimizationRunId = firstRoute.optimization_run_id;
+      
+      if (!routesData || routesData.length === 0) {
+        throw new Error("No se encontraron rutas para esta optimización");
+      }
+      
+      // Transform Supabase data to match expected format
+      const transformedRoutes = routesData.map((route: any) => {
+        // Build route_data from stops
+        const routeStops = (route.stops || []).sort((a: any, b: any) => a.order - b.order);
         
-        // If we have an optimization_run_id, load ALL routes from that optimization (all groups)
-        let allRoutesFromOptimization = finalRoutesData;
-        
-        if (optimizationRunId) {
-          console.log(`Loading all routes from optimization_run_id: ${optimizationRunId}`);
-          const { data: allRoutesData, error: allRoutesError } = await supabase
-            .from("routes")
-            .select("*")
-            .eq("optimization_run_id", optimizationRunId)
-            .order("created_at", { ascending: false });
+        // Get passengers for each stop from stop_passenger relation
+        const stopsWithPassengers = routeStops.map((stop: any) => {
+          // Extract passengers from stop_passenger relation
+          const passengers = (stop.passengers || [])
+            .map((sp: any) => sp.fk_passenger)
+            .filter(Boolean);
           
-          if (!allRoutesError && allRoutesData && allRoutesData.length > 0) {
-            allRoutesFromOptimization = allRoutesData;
-            console.log(`Found ${allRoutesFromOptimization.length} total routes from optimization session (across all groups)`);
-          }
-        }
-        
-        console.log(`Found ${finalRoutesData.length} routes linked to Nextmv run ${runId}`);
-        console.log(`Total routes from optimization session: ${allRoutesFromOptimization.length}`);
-        console.log("Routes by grupo:", allRoutesFromOptimization.reduce((acc: any, r: any) => {
-          const grupo = r.grupo || 'sin grupo';
-          acc[grupo] = (acc[grupo] || 0) + 1;
-          return acc;
-        }, {}));
-
-        // Set all routes from the optimization session (all groups)
-        setRoutes(allRoutesFromOptimization);
-        setVisibleRoutes(new Set(allRoutesFromOptimization.map((_, index) => index)));
-
-        // Also load the run data from Nextmv for display
-        try {
-          const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-          const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
-          
-          const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-          const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
-          
-          const response = await fetch(runApiUrl, {
-            method: "GET",
-            headers: {
-              "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-              "Content-Type": "application/json",
-              "Accept": "application/json",
+          return {
+            stop: {
+              id: stop.nextmv_id,
+              location: stop.fk_pickup_point ? {
+                lat: Number(stop.fk_pickup_point.latitude),
+                lon: Number(stop.fk_pickup_point.longitude)
+              } : null
             },
-          });
-          
-          if (response.ok) {
-            const runData = await response.json();
-            setSelectedRunData(runData);
-          }
-        } catch (apiError) {
-          console.warn("Could not load run data from Nextmv API:", apiError);
-          // Continue anyway - we have the routes from Supabase
-        }
-
-        toast({
-          title: "Ejecución cargada",
-          description: `Se cargaron ${allRoutesFromOptimization.length} rutas de todos los grupos relacionados`,
-        });
-        return;
-      }
-
-      // If no routes found in Supabase, fall back to loading from Nextmv API
-      // (This handles old runs that weren't saved with nextmv_run_ids)
-      console.log(`No routes found in Supabase for run ${runId}, loading from Nextmv API...`);
-      
-      const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
-      
-      const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-      const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
-      
-      const response = await fetch(runApiUrl, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to load run: ${response.status} ${response.statusText}`);
-      }
-      
-      const runData = await response.json();
-      setSelectedRunData(runData);
-      
-      // Check if run has solutions
-      const solutions = runData.output?.solutions || runData.solutions;
-      if (!solutions || solutions.length === 0) {
-        throw new Error("Esta ejecución no tiene soluciones disponibles");
-      }
-      
-      // Clear old routes
-      await supabase
-        .from("routes")
-        .delete()
-        .gte("created_at", "1970-01-01");
-      
-      // Helper functions
-      const extractPersonIdFromStopId = (stopId: string): string | undefined => {
-        if (!stopId) return undefined;
-        const match = stopId.match(/__person_(.+)$/);
-        return match ? match[1] : undefined;
-      };
-
-      const extractOriginalPointId = (stopId: string): string => {
-        if (!stopId) return stopId;
-        const index = stopId.indexOf('__person_');
-        return index > -1 ? stopId.substring(0, index) : stopId;
-      };
-
-      const MapConstructor = globalThis.Map || window.Map;
-      const pointIdToPersonMap = new MapConstructor<string, string>();
-      pickupPoints.forEach((point) => {
-        if (point.person_id) {
-          pointIdToPersonMap.set(point.id, point.person_id);
-        }
-      });
-
-      // Insert new routes
-      const routeInserts = [];
-      const solution = solutions[0];
-      if (!solution || !solution.vehicles || solution.vehicles.length === 0) {
-        throw new Error("La primera solución no tiene vehículos disponibles");
-      }
-      
-      const seenVehicles = new Set<string | null>();
-      
-      for (let vehicleIndex = 0; vehicleIndex < solution.vehicles.length; vehicleIndex++) {
-        const vehicle = solution.vehicles[vehicleIndex];
-        const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-        const vehicleIdentifier = originalVehicle?.id || vehicle.id || `vehicle-${vehicleIndex}`;
-        
-        if (seenVehicles.has(vehicleIdentifier)) {
-          continue;
-        }
-        
-        seenVehicles.add(vehicleIdentifier);
-        
-        // Extract grupo from the original vehicle
-        const vehicleGrupo = originalVehicle?.grupo || null;
-        
-        // Try to extract grupo from pickup points if not available from vehicle
-        let routeGrupo = vehicleGrupo;
-        if (!routeGrupo && vehicle.route) {
-          // Find the first stop that matches a pickup point and get its grupo
-          const extractOriginalPointId = (stopId: string): string => {
-            if (!stopId) return stopId;
-            const index = stopId.indexOf('__person_');
-            return index > -1 ? stopId.substring(0, index) : stopId;
+            passengers: passengers,
+            pickup_point: stop.fk_pickup_point,
+            order: stop.order
           };
-          
-          for (const routeStop of vehicle.route) {
-            const stopId = routeStop.stop?.id;
-            if (!stopId || stopId.includes("-start") || stopId.includes("-end")) continue;
-            
-            const originalPointId = extractOriginalPointId(stopId);
-            const point = pickupPoints.find(p => p.id === originalPointId);
-            if (point?.grupo) {
-              routeGrupo = point.grupo;
-              break; // Use the first grupo found
-            }
-          }
-        }
+        });
         
+        // Get distance and time from Supabase routes table
+        // distance is stored in meters, time is stored in seconds
+        const routeDistance = route.distance ? Number(route.distance) : 0;
+        const routeTime = route.time ? Number(route.time) : 0;
+        
+        // Build route_data structure similar to Nextmv format
         const routeData = {
-          vehicle_id: originalVehicle?.id || null,
-          route_data: vehicle,
-          total_distance: vehicle.route_travel_distance || 0,
-          total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-          grupo: routeGrupo, // Include grupo from vehicle or pickup points
-          nextmv_run_ids: [runId], // Store this Nextmv run ID
+          id: route.fk_vehicle?.nextmv_id || route.nextmv_id,
+          route: stopsWithPassengers.map((s: any) => ({ stop: s.stop })),
+          route_travel_distance: routeDistance,
+          route_travel_duration: routeTime,
         };
-
-        routeInserts.push(supabase.from("routes").insert(routeData).select());
-      }
-
-      await Promise.allSettled(routeInserts);
+        
+        return {
+          id: route.id,
+          vehicle_id: route.fk_vehicle?.id || null,
+          route_data: routeData,
+          stops: routeStops, // Include full stops with pickup_points and passengers from Supabase
+          total_distance: routeDistance,
+          total_duration: routeTime,
+          created_at: route.created_at,
+          grupo: route.grupo, // Preserve grupo if it exists
+          name: route.name // Preserve route name from Supabase
+        };
+      });
       
-      // Reload routes from database
-      const { data: reloadedRoutesData, error: reloadedRoutesError } = await supabase
-        .from("routes")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(100);
-
-      if (reloadedRoutesError) {
-        console.error("Error loading routes:", reloadedRoutesError);
-      } else {
-        const loadedRoutes = reloadedRoutesData || [];
-        setRoutes(loadedRoutes);
-        setVisibleRoutes(new Set(loadedRoutes.map((_, index) => index)));
-      }
+      console.log(`✅ Loaded ${transformedRoutes.length} routes from Supabase with stops and passengers`);
+      console.log("Routes by grupo:", transformedRoutes.reduce((acc: any, r: any) => {
+        const grupo = r.grupo || 'sin grupo';
+        acc[grupo] = (acc[grupo] || 0) + 1;
+        return acc;
+      }, {}));
+      
+      setRoutes(transformedRoutes);
+      setVisibleRoutes(new Set(transformedRoutes.map((_, index) => index)));
       
       toast({
         title: "Ejecución cargada",
-        description: "Las rutas de la ejecución seleccionada se han cargado exitosamente",
+        description: `Se cargaron ${transformedRoutes.length} rutas exitosamente`,
       });
     } catch (error) {
       console.error("Error loading run:", error);
@@ -621,20 +528,211 @@ const HistoryPage = () => {
     return Array.from(personIds);
   };
 
-  // Export functions (simplified versions)
+  // Export functions
   const handleExportToExcel = () => {
-    if (!selectedRunData) {
+    if (routes.length === 0) {
       toast({
         title: "Error",
-        description: "No hay datos de optimización para exportar",
+        description: "No hay rutas disponibles para exportar",
         variant: "destructive",
       });
       return;
     }
-    toast({
-      title: "Exportación",
-      description: "Funcionalidad de exportación a Excel (implementar según necesidad)",
-    });
+
+    try {
+      console.log("=== EXCEL EXPORT STARTED (History) ===");
+      console.log("Routes count:", routes.length);
+      
+      // Create a new workbook
+      const workbook = XLSX.utils.book_new();
+
+      // Helper function to get vehicle name
+      const getVehicleName = (route: any, routeIndex: number): string => {
+        if (route.name) return route.name;
+        const vehicle = vehicles.find(v => v.id === route.vehicle_id);
+        if (vehicle) return vehicle.name;
+        return `Ruta ${routeIndex + 1}`;
+      };
+
+      // Helper function to get stops with details from route
+      const getStopsWithDetails = (route: any) => {
+        const vehicleRoute = route.route_data?.route || [];
+        const stops: any[] = [];
+        let stopOrder = 1; // Start counting from 1 (start point will be 0)
+        
+        vehicleRoute.forEach((routeStop: any, index: number) => {
+          const stopId = routeStop.stop?.id;
+          if (!stopId || stopId.includes("-end")) return;
+          
+          const isStartPoint = stopId.includes("-start");
+          let address = "";
+          let passengers: Array<{ name: string; code: string | null }> = [];
+          
+          // Try to get address and passengers from Supabase stops
+          if (route.stops && Array.isArray(route.stops)) {
+            const dbStop = route.stops.find((s: any) => s.nextmv_id === stopId);
+            if (dbStop) {
+              if (dbStop.fk_pickup_point?.address) {
+                address = dbStop.fk_pickup_point.address;
+              }
+              if (dbStop.passengers) {
+                passengers = dbStop.passengers
+                  .map((sp: any) => sp.fk_passenger)
+                  .filter(Boolean)
+                  .map((p: any) => ({ name: p.name, code: p.code || null }));
+              }
+            }
+          }
+          
+          // Fallback to pickupPoints if not found in Supabase
+          if (!address) {
+            const extractOriginalPointId = (stopId: string): string => {
+              if (!stopId) return stopId;
+              const idx = stopId.indexOf('__person_');
+              return idx > -1 ? stopId.substring(0, idx) : stopId;
+            };
+            const originalPointId = extractOriginalPointId(stopId);
+            const point = pickupPoints.find(p => p.id === originalPointId);
+            if (point) {
+              address = point.address || point.name || "";
+            }
+          }
+          
+          const order = isStartPoint ? 0 : stopOrder++;
+          
+          stops.push({
+            order,
+            isStartPoint,
+            address: isStartPoint ? "Punto de inicio" : address || "Sin dirección",
+            location: routeStop.stop?.location,
+            passengers,
+          });
+        });
+        
+        // Sort stops by order
+        stops.sort((a, b) => {
+          if (a.isStartPoint) return -1;
+          if (b.isStartPoint) return 1;
+          return a.order - b.order;
+        });
+        
+        return stops;
+      };
+
+      // ===== CREATE A TAB FOR EACH ROUTE =====
+      routes.forEach((route: any, routeIndex: number) => {
+        try {
+          console.log(`Processing route ${routeIndex}:`, route);
+          
+          const routeName = getVehicleName(route, routeIndex);
+          const stops = getStopsWithDetails(route);
+          
+          console.log(`Route ${routeIndex} (${routeName}): ${stops.length} stops`);
+          
+          // Get route distance and duration
+          const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
+          const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
+          const distanceKm = (Number(totalDistance) / 1000).toFixed(2);
+          const durationMin = (Number(totalDuration) / 60).toFixed(1);
+          
+          // Build route sheet data with combined passengers list
+          const routeData: any[] = [
+            [routeName],
+            [],
+            ["Distancia Total", `${distanceKm} km`],
+            ["Duración Total", `${durationMin} min`],
+            [],
+            ["Orden", "Nombre", "Dirección", "Latitud", "Longitud"],
+          ];
+          
+          // Add one row per passenger (stop order repeats if multiple passengers at same stop)
+          stops.forEach((stop) => {
+            // Skip start point if it has no passengers
+            if (stop.isStartPoint && stop.passengers.length === 0) return;
+            
+            const orderLabel = stop.isStartPoint ? "Inicio" : String(stop.order);
+            const address = stop.address || "Sin dirección";
+            const lat = stop.location?.lat || "";
+            const lon = stop.location?.lon || "";
+            
+            // If stop has passengers, create one row per passenger
+            if (stop.passengers.length > 0) {
+              stop.passengers.forEach((passenger) => {
+                routeData.push([
+                  orderLabel,
+                  passenger.name || "",
+                  address,
+                  lat,
+                  lon,
+                ]);
+              });
+            } else {
+              // If stop has no passengers, still add one row with empty name
+              routeData.push([
+                orderLabel,
+                "",
+                address,
+                lat,
+                lon,
+              ]);
+            }
+          });
+          
+          // Create sheet and add to workbook
+          const routeSheet = XLSX.utils.aoa_to_sheet(routeData);
+          // Limit sheet name to 31 characters (Excel limit)
+          const sheetName = routeName.length > 31 ? routeName.substring(0, 31) : routeName;
+          XLSX.utils.book_append_sheet(workbook, routeSheet, sheetName);
+          console.log(`Added sheet: ${sheetName} with ${routeData.length} rows`);
+        } catch (routeError) {
+          console.error(`Error processing route ${routeIndex}:`, routeError);
+          // Continue with other routes even if one fails
+        }
+      });
+      
+      console.log(`Total sheets created: ${workbook.SheetNames.length}`);
+
+      // Check if workbook has any sheets
+      if (workbook.SheetNames.length === 0) {
+        console.error("No sheets were created in the workbook");
+        toast({
+          title: "Error",
+          description: "No se pudieron crear las hojas de Excel. Verifica que haya rutas con datos válidos.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Generate filename with timestamp
+      const timestamp = new Date().toISOString().split('T')[0];
+      const runId = selectedRunId || selectedOptimizationRunId || timestamp;
+      const filename = `optimizacion_${runId}_${timestamp}.xlsx`;
+
+      console.log(`Writing Excel file: ${filename} with ${workbook.SheetNames.length} sheets`);
+
+      // Write the file
+      XLSX.writeFile(workbook, filename);
+
+      console.log("Excel file written successfully");
+
+      toast({
+        title: "Exportación exitosa",
+        description: `Archivo ${filename} descargado correctamente`,
+      });
+    } catch (error) {
+      console.error("Error exporting to Excel:", error);
+      console.error("Error details:", {
+        error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        routesCount: routes.length,
+      });
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "No se pudo exportar el archivo Excel",
+        variant: "destructive",
+      });
+    }
   };
 
   const handleExportToKML = () => {
@@ -1030,12 +1128,17 @@ const HistoryPage = () => {
                             // Get vehicle capacity
                             const vehicle = vehicles.find(v => v.id === route.vehicle_id);
                             const vehicleCapacity = vehicle?.capacity || 0;
+                            // Get distance and duration from route (stored in meters and seconds)
                             const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
                             const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
-                            const distanceKm = totalDistance > 1000 ? (totalDistance / 1000).toFixed(2) : totalDistance.toFixed(2);
-                            const distanceUnit = totalDistance > 1000 ? "km" : "m";
-                            const durationMin = totalDuration > 60 ? (totalDuration / 60).toFixed(1) : totalDuration.toFixed(0);
-                            const durationUnit = totalDuration > 60 ? "min" : "seg";
+                            
+                            // Convert distance from meters to km
+                            const distanceKm = (totalDistance / 1000).toFixed(2);
+                            const distanceUnit = "km";
+                            
+                            // Convert duration from seconds to minutes
+                            const durationMin = (totalDuration / 60).toFixed(1);
+                            const durationUnit = "min";
                             
                             // Get grupo from the route itself (originally assigned group)
                             const routeGrupo = route.grupo;
@@ -1057,7 +1160,7 @@ const HistoryPage = () => {
                                   <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-2 flex-wrap">
                                     <p className="font-semibold text-sm truncate">
-                                        {vehicle?.name || `Ruta ${index + 1}`}
+                                        {route.name || vehicle?.name || `Ruta ${index + 1}`}
                                       </p>
                                       {routeGrupo && (
                                         <span className="px-2 py-0.5 text-xs font-semibold text-purple-700 bg-purple-100 rounded-md border border-purple-300">
@@ -1095,7 +1198,8 @@ const HistoryPage = () => {
                             "#26bc30", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16",
                           ];
                           const color = routeColors[selectedRouteIndex % routeColors.length];
-                          const vehicleName = vehicles.find(v => v.id === selectedRoute.vehicle_id)?.name || `Ruta ${selectedRouteIndex + 1}`;
+                          // Use route name from Supabase if available, otherwise fallback to vehicle name or generic name
+                          const vehicleName = selectedRoute.name || vehicles.find(v => v.id === selectedRoute.vehicle_id)?.name || `Ruta ${selectedRouteIndex + 1}`;
                           const vehicleRoute = selectedRoute.route_data?.route || [];
                           
                           // Extract original point ID helper
@@ -1116,13 +1220,21 @@ const HistoryPage = () => {
                               const stopId = routeStop.stop?.id;
                               const isStartPoint = stopId?.includes("-start");
                               
+                              // Extract original point ID (always do this for fallback)
+                              const extractOriginalPointId = (stopId: string): string => {
+                                if (!stopId) return stopId;
+                                const index = stopId.indexOf('__person_');
+                                return index > -1 ? stopId.substring(0, index) : stopId;
+                              };
+                              
+                              const originalPointId = extractOriginalPointId(stopId);
+                              
                               // NEW APPROACH: Find pickup_point by stop_id from database
                               // This is more reliable than extracting from encoded stop IDs
                               let point = pickupPoints.find(p => p.stop_id === stopId);
                               
                               // Fallback: if not found by stop_id, try original point ID extraction
                               if (!point) {
-                              const originalPointId = extractOriginalPointId(stopId);
                                 point = pickupPoints.find(p => p.id === originalPointId);
                               }
                               
@@ -1146,12 +1258,51 @@ const HistoryPage = () => {
                                 }
                               }
                               
-                              // Get point name
+                              // Get passengers from stop_passenger relation (if route was loaded from Supabase)
+                              const stopPassengers: Array<{ id: string; name: string; code: string | null }> = [];
+                              if (selectedRoute.stops && Array.isArray(selectedRoute.stops)) {
+                                // Find the stop in the route's stops array
+                                const dbStop = selectedRoute.stops.find((s: any) => s.nextmv_id === stopId);
+                                if (dbStop && dbStop.passengers) {
+                                  // Extract passengers from stop_passenger relation
+                                  dbStop.passengers.forEach((sp: any) => {
+                                    const passenger = sp.fk_passenger;
+                                    if (passenger) {
+                                      stopPassengers.push({
+                                        id: passenger.id,
+                                        name: passenger.name,
+                                        code: passenger.code || null
+                                      });
+                                    }
+                                  });
+                                }
+                              }
+                              
+                              // Use passengers from Supabase if available, otherwise fallback to personIds
+                              const finalPassengers = stopPassengers.length > 0 
+                                ? stopPassengers 
+                                : Array.from(personIds).map(id => ({ id, name: id, code: id }));
+                              
+                              // Get point address from Supabase pickup_point (preferred) or fallback to name
                               let pointName: string;
                               if (isStartPoint) {
-                                pointName = point?.name || "Punto de inicio";
+                                pointName = "Punto de inicio";
                               } else {
-                                pointName = point?.name || `Punto ${stopCounter}`;
+                                // Try to get address from Supabase stop's pickup_point
+                                if (selectedRoute.stops && Array.isArray(selectedRoute.stops)) {
+                                  const dbStop = selectedRoute.stops.find((s: any) => s.nextmv_id === stopId);
+                                  if (dbStop && dbStop.fk_pickup_point && dbStop.fk_pickup_point.address) {
+                                    pointName = dbStop.fk_pickup_point.address;
+                                  } else if (point?.address) {
+                                    pointName = point.address;
+                                  } else {
+                                    pointName = point?.name || `Punto ${stopCounter}`;
+                                  }
+                                } else if (point?.address) {
+                                  pointName = point.address;
+                                } else {
+                                  pointName = point?.name || `Punto ${stopCounter}`;
+                                }
                               }
                               
                               // Calculate stop index: start point is 0, others increment from 1
@@ -1163,9 +1314,10 @@ const HistoryPage = () => {
                               return {
                                 stopIndex: stopIndex,
                                 isStartPoint: isStartPoint,
-                                stopId: point?.id || originalPointId,
+                                stopId: point?.id || originalPointId || stopId,
                                 pointName: pointName,
-                                personIds: Array.from(personIds),
+                                personIds: Array.from(personIds), // Keep for backwards compatibility
+                                passengers: finalPassengers, // New field with passenger details
                                 location: routeStop.stop?.location,
                               };
                             })
@@ -1176,6 +1328,10 @@ const HistoryPage = () => {
                               return a.stopIndex - b.stopIndex;
                             });
                           
+                          // Get vehicle from route's fk_vehicle relationship (loaded from Supabase)
+                          // Fallback to vehicles array if not available in route
+                          const vehicle = selectedRoute.fk_vehicle || vehicles.find(v => v.id === selectedRoute.vehicle_id);
+                          
                           // Calculate route summary metrics
                           const actualStops = vehicleRoute.filter((routeStop: any) => {
                             const stopId = routeStop.stop?.id;
@@ -1184,17 +1340,52 @@ const HistoryPage = () => {
                           
                           const passengers = extractPassengersFromRoute(selectedRoute);
                           const passengerCount = passengers.length;
-                          // Get vehicle capacity
-                          const vehicle = vehicles.find(v => v.id === selectedRoute.vehicle_id);
                           const vehicleCapacity = vehicle?.capacity || 0;
                           
+                          // Add end point if vehicle has one
+                          let finalStopsWithDetails = [...stopsWithDetails];
+                          
+                          // Check for end location from vehicle (Supabase or local)
+                          let endLocation: { lon: number; lat: number } | null = null;
+                          if (vehicle) {
+                            // Try Supabase vehicle data first (end_latitude, end_longitude)
+                            if (vehicle.end_latitude != null && vehicle.end_longitude != null) {
+                              endLocation = {
+                                lon: Number(vehicle.end_longitude),
+                                lat: Number(vehicle.end_latitude)
+                              };
+                            }
+                            // Fallback to local vehicle end_location
+                            else if (vehicle.end_location) {
+                              endLocation = vehicle.end_location;
+                            }
+                          }
+                          
+                          // If we have an end location, add it to the stop list
+                          if (endLocation) {
+                            finalStopsWithDetails.push({
+                              stopIndex: finalStopsWithDetails.length, // Add at the end
+                              isStartPoint: false,
+                              isEndPoint: true,
+                              stopId: 'end-point',
+                              pointName: 'Punto de fin',
+                              personIds: [],
+                              passengers: [],
+                              location: endLocation,
+                            });
+                          }
+                          
+                          // Get distance and duration from route (stored in meters and seconds)
                           const totalDistance = selectedRoute.total_distance || selectedRoute.route_data?.route_travel_distance || 0;
                           const totalDuration = selectedRoute.total_duration || selectedRoute.route_data?.route_travel_duration || 0;
                           
-                          const distanceKm = totalDistance > 1000 ? (totalDistance / 1000).toFixed(2) : totalDistance.toFixed(2);
-                          const distanceUnit = totalDistance > 1000 ? "km" : "m";
-                          const durationMin = totalDuration > 60 ? (totalDuration / 60).toFixed(1) : totalDuration.toFixed(0);
-                          const durationUnit = totalDuration > 60 ? "min" : "seg";
+                          // Convert distance from meters to km
+                          const distanceKm = (totalDistance / 1000).toFixed(2);
+                          const distanceUnit = "km";
+                          
+                          // Convert duration from seconds to minutes
+                          const durationMin = (totalDuration / 60).toFixed(1);
+                          const durationUnit = "min";
                           
                           return (
                             <div className="space-y-3 h-full overflow-y-auto px-3 pb-3">
@@ -1247,7 +1438,7 @@ const HistoryPage = () => {
                                 </Button>
                               </div>
                               <div className="space-y-2">
-                                {stopsWithDetails.map((stop, idx) => (
+                                {finalStopsWithDetails.map((stop, idx) => (
                                   <div 
                                     key={idx} 
                                     className="p-2 rounded-lg border bg-muted/50 cursor-pointer hover:bg-muted transition-colors"
@@ -1266,7 +1457,7 @@ const HistoryPage = () => {
                                         className="w-6 h-6 rounded-full text-white flex items-center justify-center flex-shrink-0 text-xs font-semibold"
                                         style={{ backgroundColor: color }}
                                       >
-                                        {stop.isStartPoint ? "S" : stop.stopIndex}
+                                        {stop.isStartPoint ? "S" : stop.isEndPoint ? "F" : stop.stopIndex}
                                       </div>
                                       <div className="flex-1 min-w-0">
                                         <p className="font-medium text-sm">
@@ -1276,7 +1467,24 @@ const HistoryPage = () => {
                                     </div>
                                     {stop.isStartPoint ? (
                                       <p className="text-xs text-muted-foreground italic ml-8">Punto de inicio - Sin pasajeros</p>
-                                    ) : stop.personIds.length > 0 ? (
+                                    ) : stop.isEndPoint ? (
+                                      <p className="text-xs text-muted-foreground italic ml-8">Punto de fin - Sin pasajeros</p>
+                                    ) : stop.passengers && stop.passengers.length > 0 ? (
+                                      <div className="mt-1 ml-8">
+                                        <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
+                                        <div className="flex flex-wrap gap-1">
+                                          {stop.passengers.map((passenger: any, pIdx: number) => (
+                                            <span
+                                              key={pIdx}
+                                              className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
+                                              title={passenger.code ? `ID: ${passenger.code}` : undefined}
+                                            >
+                                              {passenger.name} {passenger.code ? `(${passenger.code})` : ''}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ) : stop.personIds && stop.personIds.length > 0 ? (
                                       <div className="mt-1 ml-8">
                                         <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
                                         <div className="flex flex-wrap gap-1">

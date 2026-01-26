@@ -44,6 +44,7 @@ interface PickupPoint {
   quantity?: number;
   person_id?: string;
   grupo?: string;
+  all_nombres?: string[]; // All passenger names when quantity >= 2
 }
 
 interface Vehicle {
@@ -98,7 +99,20 @@ const Index = () => {
   const { toast } = useToast();
 
   // Calculate total passengers from pickup points
+  // Use quantity if available (sum of all quantities), otherwise count unique person_ids
   const totalPassengers = useMemo(() => {
+    // First, try to sum quantities (more accurate if available)
+    const totalQuantity = pickupPoints.reduce((sum, point) => {
+      const qty = point.quantity || 1; // Default to 1 if quantity is not set
+      return sum + qty;
+    }, 0);
+    
+    // If we have quantities, use that (more accurate)
+    if (totalQuantity > 0) {
+      return totalQuantity;
+    }
+    
+    // Fallback: count unique person_ids if quantity is not available
     const personIds = new Set<string>();
     pickupPoints.forEach((point) => {
       if (point.person_id) {
@@ -107,7 +121,9 @@ const Index = () => {
         ids.forEach(id => personIds.add(id));
       }
     });
-    return personIds.size;
+    
+    // If we have person_ids, return count, otherwise return 0
+    return personIds.size > 0 ? personIds.size : 0;
   }, [pickupPoints]);
 
   // Helper function to get valid route count (routes with duration > 0, one per vehicle)
@@ -144,40 +160,32 @@ const Index = () => {
   const loadRuns = async () => {
     setIsLoadingRuns(true);
     try {
-      const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
+      // Load optimizations from Supabase instead of Nextmv API
+      const { data: optimizationsData, error } = await supabase
+        .from("optimizations")
+        .select("*")
+        .order("created_at", { ascending: false });
       
-      const runsUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs`;
-      const runsApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs` : runsUrl;
-      
-      const response = await fetch(runsApiUrl, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to load runs: ${response.status} ${response.statusText}`);
+      if (error) {
+        throw error;
       }
       
-      const data = await response.json();
-      // Handle both array and object with runs property
-      const runsList = Array.isArray(data) ? data : (data.runs || data.items || []);
+      // Transform Supabase optimizations to match expected format
+      const runsList = (optimizationsData || []).map((opt: any) => ({
+        id: opt.nextmv_id,
+        optimization_id: opt.id, // Store Supabase ID for loading routes
+        metadata: {
+          created_at: opt.created_at,
+          id: opt.nextmv_id
+        },
+        created_at: opt.created_at,
+        result_json: opt.result_json // Store the full result JSON
+      }));
       
-      // Sort by created_at descending (newest first)
-      const sortedRuns = runsList.sort((a: any, b: any) => {
-        const dateA = new Date(a.metadata?.created_at || a.created_at || 0).getTime();
-        const dateB = new Date(b.metadata?.created_at || b.created_at || 0).getTime();
-        return dateB - dateA;
-      });
-      
-      setRuns(sortedRuns);
-      console.log("Loaded runs:", sortedRuns);
+      setRuns(runsList);
+      console.log(`Loaded ${runsList.length} optimizations from Supabase`);
     } catch (error) {
-      console.error("Error loading runs:", error);
+      console.error("Error loading optimizations:", error);
       toast({
         title: "Error",
         description: "No se pudieron cargar las ejecuciones anteriores",
@@ -194,235 +202,130 @@ const Index = () => {
     setIsOptimizing(true);
     
     try {
-      const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
+      // Find the optimization in the runs list to get the Supabase ID
+      const selectedRun = runs.find(r => r.id === runId || r.optimization_id === runId);
+      let optimizationId = selectedRun?.optimization_id;
       
-      const runUrl = `https://api.cloud.nextmv.io/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}`;
-      const runApiUrl = import.meta.env.DEV ? `/api/nextmv/v1/applications/${NEXTMV_APPLICATION_ID}/runs/${runId}` : runUrl;
+      // Load optimization from Supabase - try by ID first, then by nextmv_id
+      let optimizationData: any = null;
       
-      const response = await fetch(runApiUrl, {
-        method: "GET",
-        headers: {
-          "Authorization": `Bearer ${NEXTMV_API_KEY}`,
-          "Content-Type": "application/json",
-          "Accept": "application/json",
-        },
-      });
-      
-      if (!response.ok) {
-        throw new Error(`Failed to load run: ${response.status} ${response.statusText}`);
-      }
-      
-      const runData = await response.json();
-      console.log("Loaded run data:", runData);
-      
-      // Store the run data for display
-      setSelectedRunData(runData);
-      
-      // Check if run has solutions
-      const solutions = runData.output?.solutions || runData.solutions;
-      if (!solutions || solutions.length === 0) {
-        throw new Error("Esta ejecución no tiene soluciones disponibles");
-      }
-      
-      // Clear old routes
-      await supabase
-        .from("routes")
-        .delete()
-        .gte("created_at", "1970-01-01");
-      
-      // Helper function to extract person_id from encoded stop ID
-      // Format: {point.id}__person_{person_id} or just {point.id}
-      const extractPersonIdFromStopId = (stopId: string): string | undefined => {
-        if (!stopId) return undefined;
-        const match = stopId.match(/__person_(.+)$/);
-        return match ? match[1] : undefined;
-      };
-
-      // Helper function to extract original point ID from encoded stop ID
-      const extractOriginalPointId = (stopId: string): string => {
-        if (!stopId) return stopId;
-        const index = stopId.indexOf('__person_');
-        return index > -1 ? stopId.substring(0, index) : stopId;
-      };
-
-        // Create mapping of original point IDs to person_ids for fallback
-        // Use global Map constructor explicitly to avoid conflict with Map component import
-        const MapConstructor = globalThis.Map || window.Map;
-        const pointIdToPersonMap = new MapConstructor<string, string>();
-      pickupPoints.forEach((point) => {
-        if (point.person_id) {
-          pointIdToPersonMap.set(point.id, point.person_id);
+      if (optimizationId) {
+        const { data, error } = await supabase
+          .from("optimizations")
+          .select("*")
+          .eq("id", optimizationId)
+          .single();
+        
+        if (!error && data) {
+          optimizationData = data;
         }
-      });
-
-      // Insert new routes - use only the FIRST solution and filter to one route per vehicle
-      const routeInserts = [];
-      let totalExpectedRoutes = 0;
-      
-      console.log(`Processing ${solutions.length} solution(s) from run data, using first solution only`);
-      
-      // Use only the first solution (solutions[0])
-      const solution = solutions[0];
-      if (!solution || !solution.vehicles || solution.vehicles.length === 0) {
-        throw new Error("La primera solución no tiene vehículos disponibles");
       }
       
-      const vehicleCount = (solution.vehicles || []).length;
-      console.log(`Processing ${vehicleCount} vehicle(s) from first solution`);
-      
-      // Track seen vehicles to ensure only one route per vehicle
-      const seenVehicles = new Set<string | null>();
-      
-      // Process vehicles from first solution, filtering to one per vehicle
-      for (let vehicleIndex = 0; vehicleIndex < solution.vehicles.length; vehicleIndex++) {
-        const vehicle = solution.vehicles[vehicleIndex];
+      // If not found by ID, try by nextmv_id
+      if (!optimizationData) {
+        const { data, error } = await supabase
+          .from("optimizations")
+          .select("*")
+          .eq("nextmv_id", runId)
+          .single();
         
-        // Find the original vehicle to get its database ID - this ensures we use the correct vehicle_id
-        const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-        // Use the database vehicle_id or create a unique identifier from vehicle.id or index
-        const vehicleIdentifier = originalVehicle?.id || vehicle.id || `vehicle-${vehicleIndex}`;
-        
-        // Skip if we've already processed a route for this vehicle
-        if (seenVehicles.has(vehicleIdentifier)) {
-          console.log(`Skipping duplicate vehicle ${vehicleIdentifier} (already processed)`);
-          continue;
+        if (error) {
+          throw new Error(`No se encontró la optimización: ${error.message}`);
         }
         
-        // Mark this vehicle as seen
-        seenVehicles.add(vehicleIdentifier);
-        totalExpectedRoutes++;
-          
-          // Extract person assignments from route stops
-          const personAssignments: string[] = [];
-          if (vehicle.route) {
-            vehicle.route.forEach((routeStop: any) => {
-              const stopId = routeStop.stop?.id;
-              if (!stopId) return;
-              
-              // Extract person_id from encoded stop ID
-              let personId = extractPersonIdFromStopId(stopId);
-              
-              // Fallback: try to get from original point ID mapping
-              if (!personId) {
-                const originalPointId = extractOriginalPointId(stopId);
-                personId = pointIdToPersonMap.get(originalPointId);
-              }
-              
-              if (personId) {
-                personAssignments.push(personId);
-              }
-            });
-          }
-          
-          const routeData = {
-            vehicle_id: originalVehicle?.id || null,
-            route_data: vehicle,
-            total_distance: vehicle.route_travel_distance || 0,
-            total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-            // Note: person_assignments column doesn't exist in the routes table
-            // If needed, this data can be stored in route_data JSON field
-          };
-
-          // Add error handling to each insert to see what's failing
-          routeInserts.push(
-            supabase.from("routes").insert(routeData).select().then(result => {
-              if (result.error) {
-                console.error(`Error inserting route for vehicle ${vehicle.id || vehicleIndex} (solution ${solutionIndex}):`, {
-                  message: result.error.message,
-                  details: result.error.details,
-                  hint: result.error.hint,
-                  code: result.error.code,
-                  routeDataSize: JSON.stringify(routeData).length,
-                  stopsCount: vehicle.route?.length || 0
-                });
-              }
-              return result;
-            }).catch(err => {
-              console.error(`Exception inserting route for vehicle ${vehicle.id || vehicleIndex}:`, err);
-              return { data: null, error: err };
-            })
-          );
-      }
-
-      // Execute all inserts and capture errors
-      const insertResults = await Promise.allSettled(routeInserts);
-      const errors: any[] = [];
-      const successes: any[] = [];
-      
-      insertResults.forEach((result, index) => {
-        if (result.status === 'rejected') {
-          console.error(`Route insert ${index} failed with rejection:`, result.reason);
-          const errorInfo = result.reason instanceof Error 
-            ? { message: result.reason.message, stack: result.reason.stack, name: result.reason.name }
-            : result.reason;
-          errors.push({ index, error: errorInfo });
-        } else {
-          const { data, error } = result.value;
-          if (error) {
-            console.error(`Route insert ${index} failed:`, error);
-            // Extract error details in a serializable way
-            const errorInfo = {
-              message: error.message,
-              details: error.details,
-              hint: error.hint,
-              code: error.code,
-              ...(error.response && {
-                status: error.response.status,
-                statusText: error.response.statusText,
-                data: error.response.data
-              })
-            };
-            errors.push({ index, error: errorInfo });
-          } else {
-            successes.push({ index, data });
-          }
-        }
-      });
-      
-      console.log(`Route inserts: ${successes.length} successful, ${errors.length} failed`);
-      if (errors.length > 0) {
-        console.error('Failed route inserts:', errors);
-        // Log first error details to understand what's wrong
-        if (errors[0]?.error) {
-          console.error('First error details:', errors[0].error);
-          // Try to stringify, but handle non-serializable properties
-          try {
-            console.error('First error details (JSON):', JSON.stringify(errors[0].error, null, 2));
-          } catch (e) {
-            console.error('Could not stringify error:', e);
-          }
-        }
+        optimizationData = data;
+        optimizationId = data.id;
       }
       
-      // Reload routes from database - load all routes that were just inserted
-      // Use the actual number of routes from all solutions, or a reasonable limit
-      const expectedRoutes = totalExpectedRoutes;
-      const routesToLoad = Math.max(expectedRoutes, vehicles.length, 100); // Higher limit to ensure all routes are loaded
+      console.log(`Loading optimization ${optimizationId} from Supabase...`);
+      setSelectedRunData(optimizationData?.result_json || optimizationData);
+      
+      // Load routes with stops and passengers from Supabase
       const { data: routesData, error: routesError } = await supabase
         .from("routes")
-        .select("*")
-        .order("created_at", { ascending: false })
-        .limit(routesToLoad);
+        .select(`
+          *,
+          fk_vehicle:vehicles(*),
+          stops:stops(
+            *,
+            fk_pickup_point:pickup_points(*),
+            passengers:stop_passenger(
+              fk_passenger:passengers(*)
+            )
+          )
+        `)
+        .eq("fk_optimization", optimizationId)
+        .order("created_at", { ascending: false });
       
-      console.log(`Loading routes: Expected ${expectedRoutes}, Loading up to ${routesToLoad}, Got ${routesData?.length || 0}`);
-
       if (routesError) {
-        console.error("Error loading routes:", routesError);
-      } else {
-        const loadedRoutes = routesData || [];
-        console.log(`Setting ${loadedRoutes.length} routes. Route data:`, loadedRoutes.map(r => ({ id: r.id, vehicle_id: r.vehicle_id, has_route_data: !!r.route_data })));
-        setRoutes(loadedRoutes);
-        // Initialize all routes as visible
-        setVisibleRoutes(new Set(loadedRoutes.map((_, index) => index)));
+        throw new Error(`Error cargando rutas: ${routesError.message}`);
       }
+      
+      if (!routesData || routesData.length === 0) {
+        throw new Error("No se encontraron rutas para esta optimización");
+      }
+      
+      // Transform Supabase data to match expected format
+      const transformedRoutes = routesData.map((route: any) => {
+        // Build route_data from stops
+        const routeStops = (route.stops || []).sort((a: any, b: any) => a.order - b.order);
+        
+        // Get passengers for each stop from stop_passenger relation
+        const stopsWithPassengers = routeStops.map((stop: any) => {
+          // Extract passengers from stop_passenger relation
+          const passengers = (stop.passengers || [])
+            .map((sp: any) => sp.fk_passenger)
+            .filter(Boolean);
+          
+          return {
+            stop: {
+              id: stop.nextmv_id,
+              location: stop.fk_pickup_point ? {
+                lat: Number(stop.fk_pickup_point.latitude),
+                lon: Number(stop.fk_pickup_point.longitude)
+              } : null
+            },
+            passengers: passengers,
+            pickup_point: stop.fk_pickup_point,
+            order: stop.order
+          };
+        });
+        
+        // Get distance and time from Supabase routes table
+        // distance is stored in meters, time is stored in seconds
+        const routeDistance = route.distance ? Number(route.distance) : 0;
+        const routeTime = route.time ? Number(route.time) : 0;
+        
+        // Build route_data structure similar to Nextmv format
+        const routeData = {
+          id: route.fk_vehicle?.nextmv_id || route.nextmv_id,
+          route: stopsWithPassengers.map((s: any) => ({ stop: s.stop })),
+          route_travel_distance: routeDistance,
+          route_travel_duration: routeTime,
+        };
+        
+        return {
+          id: route.id,
+          vehicle_id: route.fk_vehicle?.id || null,
+          route_data: routeData,
+          stops: routeStops, // Include full stops with pickup_points and passengers from Supabase
+          total_distance: routeDistance,
+          total_duration: routeTime,
+          created_at: route.created_at,
+          name: route.name // Preserve route name from Supabase
+        };
+      });
+      
+      console.log(`✅ Loaded ${transformedRoutes.length} routes from Supabase with stops and passengers`);
+      setRoutes(transformedRoutes);
+      setVisibleRoutes(new Set(transformedRoutes.map((_, index) => index)));
       
       toast({
         title: "Ejecución cargada",
         description: "Las rutas de la ejecución seleccionada se han cargado exitosamente",
       });
     } catch (error) {
-      console.error("Error loading run:", error);
+      console.error("Error loading optimization:", error);
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "No se pudo cargar la ejecución",
@@ -872,247 +775,191 @@ const Index = () => {
   };
 
   const handleExportToExcel = () => {
-    if (!selectedRunData) {
+    console.log("=== EXCEL EXPORT STARTED ===");
+    console.log("Routes count:", routes.length);
+    console.log("Routes data:", routes);
+    
+    if (routes.length === 0) {
       toast({
         title: "Error",
-        description: "No hay datos de optimización para exportar",
+        description: "No hay rutas disponibles para exportar",
         variant: "destructive",
       });
       return;
     }
 
     try {
-      const solutions = selectedRunData.output?.solutions || selectedRunData.solutions || [];
+      // Create a new workbook
+      const workbook = XLSX.utils.book_new();
+      console.log("Workbook created");
+
+      // Helper function to get vehicle name
+      const getVehicleName = (route: any, routeIndex: number): string => {
+        if (route.name) return route.name;
+        const vehicle = vehicles.find(v => v.id === route.vehicle_id);
+        if (vehicle) return vehicle.name;
+        return `Ruta ${routeIndex + 1}`;
+      };
+
+      // Helper function to get stops with details from route
+      const getStopsWithDetails = (route: any) => {
+        const vehicleRoute = route.route_data?.route || [];
+        const stops: any[] = [];
+        let stopOrder = 1; // Start counting from 1 (start point will be 0)
+        
+        vehicleRoute.forEach((routeStop: any, index: number) => {
+          const stopId = routeStop.stop?.id;
+          if (!stopId || stopId.includes("-end")) return;
+          
+          const isStartPoint = stopId.includes("-start");
+          let address = "";
+          let passengers: Array<{ name: string; code: string | null }> = [];
+          
+          // Try to get address and passengers from Supabase stops
+          if (route.stops && Array.isArray(route.stops)) {
+            const dbStop = route.stops.find((s: any) => s.nextmv_id === stopId);
+            if (dbStop) {
+              if (dbStop.fk_pickup_point?.address) {
+                address = dbStop.fk_pickup_point.address;
+              }
+              if (dbStop.passengers) {
+                passengers = dbStop.passengers
+                  .map((sp: any) => sp.fk_passenger)
+                  .filter(Boolean)
+                  .map((p: any) => ({ name: p.name, code: p.code || null }));
+              }
+            }
+          }
+          
+          // Fallback to pickupPoints if not found in Supabase
+          if (!address) {
+            const extractOriginalPointId = (stopId: string): string => {
+              if (!stopId) return stopId;
+              const idx = stopId.indexOf('__person_');
+              return idx > -1 ? stopId.substring(0, idx) : stopId;
+            };
+            const originalPointId = extractOriginalPointId(stopId);
+            const point = pickupPoints.find(p => p.id === originalPointId);
+            if (point) {
+              address = point.address || point.name || "";
+            }
+          }
+          
+          const order = isStartPoint ? 0 : stopOrder++;
+          
+          stops.push({
+            order,
+            isStartPoint,
+            address: isStartPoint ? "Punto de inicio" : address || "Sin dirección",
+            location: routeStop.stop?.location,
+            passengers,
+          });
+        });
+        
+        // Sort stops by order
+        stops.sort((a, b) => {
+          if (a.isStartPoint) return -1;
+          if (b.isStartPoint) return 1;
+          return a.order - b.order;
+        });
+        
+        return stops;
+      };
+
+      // ===== CREATE A TAB FOR EACH ROUTE =====
+      routes.forEach((route: any, routeIndex: number) => {
+        try {
+          console.log(`Processing route ${routeIndex}:`, route);
+          
+          const routeName = getVehicleName(route, routeIndex);
+          const stops = getStopsWithDetails(route);
+          
+          console.log(`Route ${routeIndex} (${routeName}): ${stops.length} stops`);
+          
+          // Get route distance and duration
+          const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
+          const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
+          const distanceKm = (Number(totalDistance) / 1000).toFixed(2);
+          const durationMin = (Number(totalDuration) / 60).toFixed(1);
+          
+          // Build route sheet data with combined passengers list
+          const routeData: any[] = [
+            [routeName],
+            [],
+            ["Distancia Total", `${distanceKm} km`],
+            ["Duración Total", `${durationMin} min`],
+            [],
+            ["Orden", "Nombre", "Dirección", "Latitud", "Longitud"],
+          ];
+          
+          // Add one row per passenger (stop order repeats if multiple passengers at same stop)
+          stops.forEach((stop) => {
+            // Skip start point if it has no passengers
+            if (stop.isStartPoint && stop.passengers.length === 0) return;
+            
+            const orderLabel = stop.isStartPoint ? "Inicio" : String(stop.order);
+            const address = stop.address || "Sin dirección";
+            const lat = stop.location?.lat || "";
+            const lon = stop.location?.lon || "";
+            
+            // If stop has passengers, create one row per passenger
+            if (stop.passengers.length > 0) {
+              stop.passengers.forEach((passenger) => {
+                routeData.push([
+                  orderLabel,
+                  passenger.name || "",
+                  address,
+                  lat,
+                  lon,
+                ]);
+              });
+            } else {
+              // If stop has no passengers, still add one row with empty name
+              routeData.push([
+                orderLabel,
+                "",
+                address,
+                lat,
+                lon,
+              ]);
+            }
+          });
+          
+          // Create sheet and add to workbook
+          const routeSheet = XLSX.utils.aoa_to_sheet(routeData);
+          // Limit sheet name to 31 characters (Excel limit)
+          const sheetName = routeName.length > 31 ? routeName.substring(0, 31) : routeName;
+          XLSX.utils.book_append_sheet(workbook, routeSheet, sheetName);
+          console.log(`Added sheet: ${sheetName} with ${routeData.length} rows`);
+        } catch (routeError) {
+          console.error(`Error processing route ${routeIndex}:`, routeError);
+          // Continue with other routes even if one fails
+        }
+      });
       
-      if (solutions.length === 0) {
+      console.log(`Total sheets created: ${workbook.SheetNames.length}`);
+
+      // Check if workbook has any sheets
+      if (workbook.SheetNames.length === 0) {
+        console.error("No sheets were created in the workbook");
         toast({
           title: "Error",
-          description: "No hay soluciones disponibles para exportar",
+          description: "No se pudieron crear las hojas de Excel. Verifica que haya rutas con datos válidos.",
           variant: "destructive",
         });
         return;
       }
 
-      // Create a new workbook
-      const workbook = XLSX.utils.book_new();
-
-      // ===== SUMMARY SHEET =====
-      let totalVehicles = 0;
-      let totalDistance = 0;
-      let totalDuration = 0;
-      let totalStops = 0;
-
-      const summaryData: any[] = [
-        ["Resumen de Optimización"],
-        [],
-        ["ID de Ejecución", selectedRunId || "N/A"],
-        ["Fecha", selectedRunData.metadata?.created_at || selectedRunData.created_at 
-          ? new Date(selectedRunData.metadata?.created_at || selectedRunData.created_at).toLocaleString('es-ES')
-          : "N/A"],
-        ["Estado", selectedRunData.metadata?.status || selectedRunData.status || "N/A"],
-        [],
-        ["Estadísticas"],
-      ];
-
-      // Process all solutions
-      solutions.forEach((solution: any, solutionIndex: number) => {
-        const vehicles = solution.vehicles || [];
-        totalVehicles += vehicles.length;
-
-        vehicles.forEach((vehicle: any) => {
-          const distance = vehicle.route_travel_distance || vehicle.route_distance || 0;
-          const duration = vehicle.route_travel_duration || vehicle.route_duration || 0;
-          const stops = vehicle.route || [];
-          
-          totalDistance += typeof distance === 'string' ? parseFloat(distance) : distance;
-          totalDuration += typeof duration === 'string' ? parseFloat(duration) : duration;
-          totalStops += stops.length;
-        });
-      });
-
-      summaryData.push(
-        ["Total de Soluciones", solutions.length],
-        ["Total de Vehículos", totalVehicles],
-        ["Total de Paradas", totalStops],
-        ["Distancia Total (km)", (totalDistance / 1000).toFixed(2)],
-        ["Duración Total (minutos)", (totalDuration / 60).toFixed(2)],
-      );
-
-      const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
-      XLSX.utils.book_append_sheet(workbook, summarySheet, "Resumen");
-
-      // Helper function to extract person_id from encoded stop ID (same as used elsewhere)
-      const extractPersonIdFromStopId = (stopId: string): string | undefined => {
-        if (!stopId) return undefined;
-        const match = stopId.match(/__person_(.+)$/);
-        return match ? match[1] : undefined;
-      };
-      
-      // Create mapping of original point IDs to person_ids for fallback
-      const MapConstructor = globalThis.Map || window.Map;
-      const pointIdToPersonMap = new MapConstructor<string, string>();
-      pickupPoints.forEach((point) => {
-        if (point.person_id) {
-          pointIdToPersonMap.set(point.id, point.person_id);
-        }
-      });
-      
-      // Helper function to extract original point ID from encoded stop ID
-      const extractOriginalPointId = (stopId: string): string => {
-        if (!stopId) return stopId;
-        const index = stopId.indexOf('__person_');
-        return index > -1 ? stopId.substring(0, index) : stopId;
-      };
-
-      // ===== ROUTES SHEET =====
-      const routesData: any[] = [
-        ["Solución", "Vehículo ID", "Placa", "Orden en Ruta", "Stop ID", "ID Persona", "Tipo", "Latitud", "Longitud", 
-         "Distancia Acumulada (km)", "Duración Acumulada (min)", "Distancia al Siguiente (km)", "Duración al Siguiente (min)"]
-      ];
-
-      solutions.forEach((solution: any, solutionIndex: number) => {
-        const solutionVehicles = solution.vehicles || [];
-        
-        solutionVehicles.forEach((vehicle: any) => {
-          // Find the vehicle in the vehicles array to get the plate (name)
-          const vehicleInfo = vehicles.find(v => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-          const vehiclePlate = vehicleInfo?.name || vehicle.id || "N/A";
-          
-          const route = vehicle.route || [];
-          let accumulatedDistance = 0;
-          let accumulatedDuration = 0;
-
-          route.forEach((routeStop: any, stopIndex: number) => {
-            const stop = routeStop.stop || {};
-            const location = stop.location || {};
-            
-            // Extract all person_ids from the original point
-            // Stop ID only contains the first person_id, but the original point may have multiple (comma-separated)
-            let personIds = "";
-            const originalPointId = extractOriginalPointId(stop.id || '');
-            const originalPoint = pickupPoints.find(p => p.id === originalPointId);
-            
-            if (originalPoint?.person_id) {
-              // Use all person_ids from the original point (may be comma-separated)
-              personIds = originalPoint.person_id;
-            } else {
-              // Fallback: try to extract from stop ID (only the first one)
-              const personIdFromStopId = extractPersonIdFromStopId(stop.id || '');
-              if (personIdFromStopId) {
-                personIds = personIdFromStopId;
-              } else {
-                // Final fallback: check the map
-                const personIdFromMap = pointIdToPersonMap.get(originalPointId);
-                if (personIdFromMap) {
-                  personIds = personIdFromMap;
-                }
-              }
-            }
-            
-            // Calculate distances/durations for the leg to this stop
-            const distance = routeStop.distance || routeStop.travel_distance || 0;
-            const duration = routeStop.duration || routeStop.travel_duration || 0;
-            const nextDistance = route[stopIndex + 1]?.distance || route[stopIndex + 1]?.travel_distance || 0;
-            const nextDuration = route[stopIndex + 1]?.duration || route[stopIndex + 1]?.travel_duration || 0;
-
-            const distanceNum = typeof distance === 'string' ? parseFloat(distance) || 0 : (distance || 0);
-            const durationNum = typeof duration === 'string' ? parseFloat(duration) || 0 : (duration || 0);
-            
-            // Accumulate distance/duration to show total traveled to reach this stop
-            accumulatedDistance += isNaN(distanceNum) ? 0 : distanceNum;
-            accumulatedDuration += isNaN(durationNum) ? 0 : durationNum;
-
-            const stopType = stop.type || (stopIndex === 0 ? "Inicio" : stopIndex === route.length - 1 ? "Fin" : "Parada");
-            
-            const nextDistanceNum = typeof nextDistance === 'string' ? (parseFloat(nextDistance) || 0) : (nextDistance || 0);
-            const nextDurationNum = typeof nextDuration === 'string' ? (parseFloat(nextDuration) || 0) : (nextDuration || 0);
-            
-            routesData.push([
-              solutionIndex + 1,
-              vehicle.id || "N/A",
-              vehiclePlate,
-              stopIndex + 1,
-              stop.id || "N/A",
-              personIds || "", // All person IDs (comma-separated if multiple)
-              stopType,
-              location.lat || "",
-              location.lon || "",
-              (accumulatedDistance / 1000).toFixed(3),
-              (accumulatedDuration / 60).toFixed(2),
-              nextDistanceNum > 0 ? (nextDistanceNum / 1000).toFixed(3) : "",
-              nextDurationNum > 0 ? (nextDurationNum / 60).toFixed(2) : "",
-            ]);
-          });
-
-          // Add vehicle summary row
-          const vehicleDistance = vehicle.route_travel_distance || vehicle.route_distance || 0;
-          const vehicleDuration = vehicle.route_travel_duration || vehicle.route_duration || 0;
-          routesData.push([
-            solutionIndex + 1,
-            vehicle.id || "N/A",
-            vehiclePlate,
-            "TOTAL",
-            "",
-            "",
-            `Total Vehículo: ${vehiclePlate}`,
-            "",
-            "",
-            ((typeof vehicleDistance === 'string' ? parseFloat(vehicleDistance) : vehicleDistance) / 1000).toFixed(3),
-            ((typeof vehicleDuration === 'string' ? parseFloat(vehicleDuration) : vehicleDuration) / 60).toFixed(2),
-            "",
-            "",
-          ]);
-          routesData.push([]); // Empty row for separation
-        });
-      });
-
-      const routesSheet = XLSX.utils.aoa_to_sheet(routesData);
-      XLSX.utils.book_append_sheet(workbook, routesSheet, "Rutas Detalladas");
-
-      // ===== VEHICLES SUMMARY SHEET =====
-      const vehiclesData: any[] = [
-        ["Solución", "Vehículo ID", "Placa", "Número de Paradas", "Distancia Total (km)", "Duración Total (min)", 
-         "Distancia Promedio por Parada (km)", "Duración Promedio por Parada (min)"]
-      ];
-
-      solutions.forEach((solution: any, solutionIndex: number) => {
-        const solutionVehicles = solution.vehicles || [];
-        
-        solutionVehicles.forEach((vehicle: any) => {
-          // Find the vehicle in the vehicles array to get the plate (name)
-          const vehicleInfo = vehicles.find(v => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-          const vehiclePlate = vehicleInfo?.name || vehicle.id || "N/A";
-          
-          const route = vehicle.route || [];
-          const numStops = route.length;
-          const distance = vehicle.route_travel_distance || vehicle.route_distance || 0;
-          const duration = vehicle.route_travel_duration || vehicle.route_duration || 0;
-          
-          const distanceNum = typeof distance === 'string' ? parseFloat(distance) : distance;
-          const durationNum = typeof duration === 'string' ? parseFloat(duration) : duration;
-          
-          vehiclesData.push([
-            solutionIndex + 1,
-            vehicle.id || "N/A",
-            vehiclePlate,
-            numStops,
-            (distanceNum / 1000).toFixed(3),
-            (durationNum / 60).toFixed(2),
-            numStops > 0 ? (distanceNum / 1000 / numStops).toFixed(3) : 0,
-            numStops > 0 ? (durationNum / 60 / numStops).toFixed(2) : 0,
-          ]);
-        });
-      });
-
-      const vehiclesSheet = XLSX.utils.aoa_to_sheet(vehiclesData);
-      XLSX.utils.book_append_sheet(workbook, vehiclesSheet, "Resumen Vehículos");
-
       // Generate filename with timestamp
       const timestamp = new Date().toISOString().split('T')[0];
       const filename = `optimizacion_${selectedRunId || timestamp}_${timestamp}.xlsx`;
 
+      console.log(`Writing Excel file: ${filename} with ${workbook.SheetNames.length} sheets`);
+
       // Write the file
       XLSX.writeFile(workbook, filename);
+
+      console.log("Excel file written successfully");
 
       toast({
         title: "Exportación exitosa",
@@ -1185,6 +1032,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     const normalizedData = (data || []).map((point: any) => ({
       ...point,
         quantity: point.quantity != null && !isNaN(point.quantity) ? Number(point.quantity) : 1,
+        // Preserve all_nombres if it exists (from localStorage)
+        all_nombres: point.all_nombres 
+          ? (Array.isArray(point.all_nombres) ? point.all_nombres : (typeof point.all_nombres === 'string' ? point.all_nombres.split(',').map((n: string) => n.trim()) : []))
+          : undefined,
       }));
       
       console.log("=== PUNTOS CARGADOS DESDE BD ===");
@@ -1273,17 +1124,15 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       savePointsToLocalStorage(updatedPoints);
       
       // Try Supabase if available (optional)
+      // New schema only has: latitude, longitude, address, quantity
       try {
         await supabase
           .from("pickup_points")
           .update({
-            name: updateData.name,
-            address: updateData.address,
             latitude: updateData.latitude,
             longitude: updateData.longitude,
+            address: updateData.address,
             quantity: quantity,
-            person_id: updateData.person_id,
-            grupo: updateData.grupo,
           })
           .eq("id", editingPickupPoint.id);
       } catch (error) {
@@ -1315,16 +1164,15 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       savePointsToLocalStorage(updatedPoints);
       
       // Try Supabase if available (optional)
+      // New schema only has: latitude, longitude, address, quantity
       try {
         await supabase
           .from("pickup_points")
           .insert([{
-            name: insertData.name,
-            address: insertData.address || `${insertData.latitude}, ${insertData.longitude}`,
             latitude: insertData.latitude,
             longitude: insertData.longitude,
+            address: insertData.address || `${insertData.latitude}, ${insertData.longitude}`,
             quantity: quantity,
-            person_id: insertData.person_id,
           }]);
       } catch (error) {
         console.warn("Supabase insert failed (using localStorage):", error);
@@ -1530,7 +1378,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       let processedRows = 0;
       let skippedRows = 0;
       
-      // Map to track occurrences: key -> { lat, lon, count, occurrences, person_ids, grupo, nombre, direccion }
+      // Map to track occurrences: key -> { lat, lon, count, occurrences, person_ids, grupo, nombres, direccion }
       const occurrenceMap: Record<string, {
         latitude: number;
         longitude: number;
@@ -1538,7 +1386,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         occurrences: number[]; // Track each occurrence for debugging
         person_ids: string[]; // Track person IDs at this location
         grupo?: string; // Store grupo if available
-        nombre?: string; // Store nombre if available
+        nombres: string[]; // Track all names (nombres) at this location
         direccion?: string; // Store direccion if available
       }> = {};
       
@@ -1605,13 +1453,13 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           if (personId && !occurrenceMap[key].person_ids.includes(personId)) {
             occurrenceMap[key].person_ids.push(personId);
           }
+          // Add nombre if available and not already in the list
+          if (nombre && !occurrenceMap[key].nombres.includes(nombre)) {
+            occurrenceMap[key].nombres.push(nombre);
+          }
           // Update grupo if available (use first non-empty value found)
           if (grupo && !occurrenceMap[key].grupo) {
             occurrenceMap[key].grupo = grupo;
-          }
-          // Update nombre if available (use first non-empty value found)
-          if (nombre && !occurrenceMap[key].nombre) {
-            occurrenceMap[key].nombre = nombre;
           }
           // Update direccion if available (use first non-empty value found)
           if (direccion && !occurrenceMap[key].direccion) {
@@ -1628,7 +1476,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             occurrences: [1], // Track first occurrence
             person_ids: personId ? [personId] : [], // Store person_id if available
             grupo: grupo || undefined, // Store grupo if available
-            nombre: nombre || undefined, // Store nombre if available
+            nombres: nombre ? [nombre] : [], // Store nombre if available
             direccion: direccion || undefined, // Store direccion if available
           };
           processedRows++;
@@ -1669,7 +1517,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           ? (item.person_ids.length === 1 ? item.person_ids[0] : item.person_ids.join(", "))
           : undefined, // Store single person_id or comma-separated if multiple
         grupo: item.grupo, // Store grupo if available
-        nombre: item.nombre, // Store nombre if available
+        nombre: item.nombres.length > 0 
+          ? (item.nombres.length === 1 ? item.nombres[0] : item.nombres.join(", ")) 
+          : undefined, // Store single nombre or comma-separated if multiple
         direccion: item.direccion, // Store direccion if available
       }));
       
@@ -1740,10 +1590,26 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         const lat = point.latitude;
         const lon = point.longitude;
         
-        // Use nombre for name if available, otherwise default
-        const name = point.nombre || `Punto ${index + 1}`;
+        // Use first nombre for name if available, otherwise default
+        // If multiple nombres, use first one as primary name
+        // Split by comma and clean up - handle both ", " and "," separators
+        const nombres = point.nombre 
+          ? point.nombre.split(/,/).map(n => n.trim()).filter(n => n.length > 0)
+          : [];
+        const name = nombres.length > 0 ? nombres[0] : `Punto ${index + 1}`;
         // Use direccion for address if available, otherwise use coordinates
         const address = point.direccion || `${lat}, ${lon}`;
+        
+        // Log passenger data for debugging
+        if (nombres.length > 0 || point.person_id) {
+          console.log(`📋 Point ${index + 1} (${lat}, ${lon}):`, {
+            quantity,
+            nombres: nombres.length,
+            nombres_list: nombres,
+            person_id: point.person_id,
+            has_all_nombres: nombres.length > 0
+          });
+        }
         
         return {
           name: name,
@@ -1753,6 +1619,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           quantity: quantity, // This is the consolidated count
           person_id: point.person_id, // Include person_id if available
           grupo: point.grupo, // Include grupo if available
+          // Store all nombres - always set if we have nombres, regardless of quantity
+          // This ensures passengers can be created even for quantity = 1
+          all_nombres: nombres.length > 0 ? nombres : undefined,
         };
       });
 
@@ -1802,14 +1671,18 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         // Quantity is the consolidated count (number of times this coordinate appeared)
           const quantity = Math.max(1, Math.floor(pointData.quantity || 1));
         
+        // New schema only has: latitude, longitude, address, quantity
+        // BUT we need to preserve all_nombres and person_id for localStorage and passenger creation
         const baseData: any = {
-            name: pointData.name,
-            address: pointData.address,
           latitude: lat,
           longitude: lon,
+          address: pointData.address || `${lat}, ${lon}`,
           quantity: quantity, // ALWAYS include quantity - it's the consolidated count
-          person_id: pointData.person_id, // Include person_id if available
-          grupo: pointData.grupo, // Include grupo if available
+          // Preserve passenger data for localStorage (not for database insert)
+          all_nombres: pointData.all_nombres, // Keep for localStorage
+          person_id: pointData.person_id, // Keep for localStorage
+          name: pointData.name, // Keep name for localStorage
+          grupo: pointData.grupo, // Keep grupo for localStorage
         };
         
         if (quantity > 1) {
@@ -1843,6 +1716,28 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         updated_at: new Date().toISOString(),
       }));
       
+      // Log passenger data being saved
+      const pointsWithPassengers = pointsWithIds.filter(p => p.all_nombres && p.all_nombres.length > 0);
+      console.log("=== VERIFICACIÓN DE DATOS DE PASAJEROS ===");
+      console.log(`Puntos con all_nombres: ${pointsWithPassengers.length}`);
+      if (pointsWithPassengers.length > 0) {
+        console.log("Ejemplos de puntos con all_nombres guardados:", pointsWithPassengers.slice(0, 5).map(p => ({
+          name: p.name,
+          quantity: p.quantity,
+          all_nombres: p.all_nombres,
+          person_id: p.person_id
+        })));
+      } else {
+        console.warn("⚠️ ADVERTENCIA: No se encontraron puntos con all_nombres para guardar");
+        // Show first few points to debug
+        console.log("Primeros 5 puntos guardados:", pointsWithIds.slice(0, 5).map(p => ({
+          name: p.name,
+          quantity: p.quantity,
+          has_all_nombres: !!p.all_nombres,
+          all_nombres: p.all_nombres
+        })));
+      }
+      
       // Save to localStorage
       localStorage.setItem('pickup_points', JSON.stringify(pointsWithIds));
       console.log("=== PUNTOS GUARDADOS EN LOCALSTORAGE ===");
@@ -1853,7 +1748,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       if (pointsWithQtySaved.length > 0) {
         console.log("✅ Puntos guardados con cantidad > 1:", pointsWithQtySaved.slice(0, 5).map(p => ({
           name: p.name,
-          quantity: p.quantity
+          quantity: p.quantity,
+          has_all_nombres: !!p.all_nombres,
+          all_nombres_count: p.all_nombres?.length || 0
         })));
       }
       
@@ -2443,6 +2340,12 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       return;
     }
 
+    // Store count before clearing
+    const vehiclesCount = vehicles.length;
+    
+    // Always clear local state first to ensure UI is updated immediately
+    setVehicles([]);
+
     try {
       const { error } = await supabase
         .from("vehicles")
@@ -2450,16 +2353,14 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         .neq("id", "00000000-0000-0000-0000-000000000000"); // Delete all
 
       if (error) {
+        console.error("Error deleting vehicles from database:", error);
         toast({
-          title: "Error",
-          description: "No se pudieron eliminar los vehículos",
+          title: "Vehículos eliminados localmente",
+          description: `Se eliminaron ${vehiclesCount} vehículos de la interfaz, pero hubo un error al eliminar de la base de datos`,
           variant: "destructive",
         });
         return;
       }
-
-      const vehiclesCount = vehicles.length;
-      setVehicles([]);
       
       toast({
         title: "Vehículos eliminados",
@@ -2468,8 +2369,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     } catch (error) {
       console.error("Error deleting vehicles:", error);
       toast({
-        title: "Error",
-        description: "Ocurrió un error al eliminar los vehículos",
+        title: "Vehículos eliminados localmente",
+        description: `Se eliminaron ${vehiclesCount} vehículos de la interfaz, pero hubo un error al eliminar de la base de datos`,
         variant: "destructive",
       });
     }
@@ -2536,21 +2437,11 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           };
         }),
         vehicles: (vehicles.length > 0 ? vehicles : []).map((vehicle, index) => {
-          // Get start location from vehicle config, first pickup point, or default
-          let startLocation: { lon: number; lat: number };
+          // Get start location from vehicle config only (don't use fallbacks)
+          // Only include start_location if it was explicitly set
+          let startLocation: { lon: number; lat: number } | undefined;
           if (vehicle.start_location) {
             startLocation = vehicle.start_location;
-          } else if (pickupPoints[0] && pickupPoints[0].longitude && pickupPoints[0].latitude) {
-            startLocation = {
-              lon: Number(parseFloat(String(pickupPoints[0].longitude))),
-              lat: Number(parseFloat(String(pickupPoints[0].latitude)))
-            };
-          } else {
-            // Use default location if no points available (for preview)
-            startLocation = {
-              lon: 0,
-              lat: 0
-            };
           }
           
           // Get end location from vehicle config or null
@@ -2577,14 +2468,18 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           
           const vehiclePayload: any = {
             id: String(vehicle.id || `vehicle-${index}`),
-            start_location: {
-              lon: Number(startLocation.lon),
-              lat: Number(startLocation.lat)
-            },
             capacity: Number(capacity), // Capacity should be an integer
             max_distance: Number(maxDistance),
             speed: Number(10) // Speed in m/s (10 m/s = 36 km/h)
           };
+          
+          // Add start location only if explicitly specified
+          if (startLocation) {
+            vehiclePayload.start_location = {
+              lon: Number(startLocation.lon),
+              lat: Number(startLocation.lat)
+            };
+          }
           
           // Add end location if specified
           if (endLocation) {
@@ -2731,6 +2626,22 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Regenerate JSON whenever the preview dialog opens to ensure it shows current data
+  useEffect(() => {
+    if (previewJsonDialogOpen) {
+      try {
+        // Regenerate JSON with current data whenever dialog opens
+        const { payload, endpoint } = buildNextmvPayload(true);
+        setNextmvJson(payload);
+        setNextmvEndpoint(endpoint);
+      } catch (error) {
+        console.error("Error regenerating JSON preview:", error);
+        // Don't show error toast here - just log it, dialog will show existing data or empty
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewJsonDialogOpen, vehicles, pickupPoints, optimizationConfig]);
+
   const handleOptimizeRoutes = async () => {
     if (pickupPoints.length < 2) {
       toast({
@@ -2755,6 +2666,118 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
     setSelectedRunId(null);
     setSelectedRunData(null);
     try {
+      // STEP 1: Create pickup_points and passengers BEFORE calling Nextmv
+      console.log("=== CREATING PICKUP_POINTS AND PASSENGERS BEFORE NEXTMV ===");
+      const MapConstructor = globalThis.Map || window.Map;
+      const localPointToDbPickupPointMap = new MapConstructor<string, any>(); // Maps local point ID to DB pickup_point
+      const passengerMap = new MapConstructor<string, any>(); // Maps person_id to DB passenger record
+      
+      // Create pickup_points from local data
+      console.log(`Creating ${pickupPoints.length} pickup_points from local data...`);
+      for (const localPoint of pickupPoints) {
+        const { data: pickupPointData, error: pickupPointError } = await supabase
+          .from("pickup_points")
+          .insert({
+            latitude: Number(localPoint.latitude),
+            longitude: Number(localPoint.longitude),
+            address: localPoint.address || `${localPoint.latitude}, ${localPoint.longitude}`,
+            quantity: localPoint.quantity || 1,
+          })
+          .select()
+          .single();
+        
+        if (pickupPointError) {
+          console.error(`Error creating pickup_point for ${localPoint.id}:`, pickupPointError);
+          continue;
+        }
+        
+        if (pickupPointData) {
+          localPointToDbPickupPointMap.set(localPoint.id, pickupPointData);
+          console.log(`✅ Created pickup_point ${pickupPointData.id} for local point ${localPoint.id}`);
+          
+          // Create passengers for this pickup_point
+          const nombres = localPoint.all_nombres || (localPoint.name ? [localPoint.name] : []);
+          const personIds = localPoint.person_id 
+            ? localPoint.person_id.split(',').map(id => id.trim()).filter(id => id)
+            : [];
+          
+          console.log(`Creating passengers for pickup_point ${pickupPointData.id}:`, {
+            nombres_count: nombres.length,
+            personIds_count: personIds.length,
+            nombres: nombres,
+            personIds: personIds
+          });
+          
+          if (nombres.length > 0) {
+            for (let i = 0; i < nombres.length; i++) {
+              const nombre = nombres[i];
+              const personIdKey = personIds[i] || `person-${i}-${localPoint.id}`;
+              const code = personIds[i] || null;
+              
+              if (passengerMap.has(personIdKey)) {
+                console.log(`Passenger ${personIdKey} already exists, skipping`);
+                continue;
+              }
+              
+              const { data: passengerData, error: passengerError } = await supabase
+                .from("passengers")
+                .insert({
+                  name: nombre,
+                  code: code,
+                  fk_pickup_point: pickupPointData.id,
+                })
+                .select()
+                .single();
+              
+              if (passengerError) {
+                console.error(`Error creating passenger for ${nombre}:`, passengerError);
+                continue;
+              }
+              
+              if (passengerData) {
+                passengerMap.set(personIdKey, passengerData);
+                console.log(`✅ Created passenger ${passengerData.id} (${nombre}, code: ${code})`);
+              }
+            }
+          } else if (localPoint.name) {
+            // Fallback: create one passenger with the point name
+            const quantity = localPoint.quantity || 1;
+            const quantityToCreate = Math.max(1, quantity);
+            
+            for (let i = 0; i < quantityToCreate; i++) {
+              const personIdKey = `person-${i}-${localPoint.id}`;
+              const code = personIds.length > i ? personIds[i] : (personIds.length > 0 ? personIds[0] : null);
+              
+              if (passengerMap.has(personIdKey)) {
+                continue;
+              }
+              
+              const { data: passengerData, error: passengerError } = await supabase
+                .from("passengers")
+                .insert({
+                  name: quantityToCreate > 1 ? `${localPoint.name} (${i + 1})` : localPoint.name,
+                  code: code,
+                  fk_pickup_point: pickupPointData.id,
+                })
+                .select()
+                .single();
+              
+              if (passengerError) {
+                console.error(`Error creating passenger ${i + 1} for ${localPoint.name}:`, passengerError);
+                continue;
+              }
+              
+              if (passengerData) {
+                passengerMap.set(personIdKey, passengerData);
+                console.log(`✅ Created passenger ${passengerData.id} (${passengerData.name}, code: ${code})`);
+              }
+            }
+          }
+        }
+      }
+      
+      console.log(`✅ Created ${localPointToDbPickupPointMap.size} pickup_points and ${passengerMap.size} passengers`);
+      
       // Build the JSON payload using the extracted function
       const { payload: cleanPayload, endpoint: nextmvFullUrl } = buildNextmvPayload();
       setNextmvJson(cleanPayload);
@@ -3136,23 +3159,18 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         throw new Error("La solución no contiene vehículos válidos");
       }
 
-      // Save routes to Supabase database
-      try {
-        
-        // Clear old routes before inserting new ones
-        await supabase
-          .from("routes")
-          .delete()
-          .gte("created_at", "1970-01-01");
-        
-        // Helper function to extract person_id from encoded stop ID
-        // Format: {point.id}__person_{person_id} or just {point.id}
-        const extractPersonIdFromStopId = (stopId: string): string | undefined => {
-          if (!stopId) return undefined;
-          const match = stopId.match(/__person_(.+)$/);
-          return match ? match[1] : undefined;
-        };
+      // Get the Nextmv run ID
+      const nextmvRunId = runId || data.id || data.metadata?.id || null;
+      if (!nextmvRunId) {
+        console.warn("No Nextmv run ID found, cannot save optimization to database");
+      }
 
+      // Store the optimization ID for loading routes later
+      let savedOptimizationId: string | null = null;
+
+      // Save to new database schema
+      // NOTE: pickup_points and passengers were already created BEFORE calling Nextmv
+      try {
         // Helper function to extract original point ID from encoded stop ID
         const extractOriginalPointId = (stopId: string): string => {
           if (!stopId) return stopId;
@@ -3160,154 +3178,379 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           return index > -1 ? stopId.substring(0, index) : stopId;
         };
 
-        // Create mapping of original point IDs to person_ids for fallback
-        // Use global Map constructor explicitly to avoid conflict with Map component import
-        const MapConstructor = globalThis.Map || window.Map;
-        const pointIdToPersonMap = new MapConstructor<string, string>();
-        pickupPoints.forEach((point) => {
-          if (point.person_id) {
-            pointIdToPersonMap.set(point.id, point.person_id);
-          }
-        });
-
-        // Insert new routes
-        const routeInserts = [];
-        // Filter to one route per vehicle before inserting
-        const seenVehiclesForDb = new Set<string>();
-        for (const vehicle of solution.vehicles || []) {
-          // Find the original vehicle to get its ID - this ensures we use the database vehicle_id
-          const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-          // Use the database vehicle_id or create a unique identifier from vehicle.id or index
-          const vehicleIdentifier = originalVehicle?.id || vehicle.id || `vehicle-${solution.vehicles.indexOf(vehicle)}`;
+        // Create mapping from stop IDs to already-created pickup_points
+        // Use the localPointToDbPickupPointMap we created before Nextmv
+        const stopIdToPickupPointMap = new MapConstructor<string, any>();
+        const stopsFromPayload = cleanPayload.input.stops || [];
+        
+        console.log(`Linking ${stopsFromPayload.length} stops to already-created pickup_points...`);
+        
+        for (const stop of stopsFromPayload) {
+          const stopId = stop.id;
+          const originalPointId = extractOriginalPointId(stopId);
+          const dbPickupPoint = localPointToDbPickupPointMap.get(originalPointId);
           
-          // Skip if we've already processed a route for this vehicle
-          if (seenVehiclesForDb.has(vehicleIdentifier)) {
-            console.log(`Skipping duplicate vehicle ${vehicleIdentifier} for database insert`);
+          if (dbPickupPoint) {
+            stopIdToPickupPointMap.set(stopId, dbPickupPoint);
+            console.log(`✅ Linked stop ${stopId} to pickup_point ${dbPickupPoint.id}`);
+          } else {
+            console.warn(`⚠️ No pickup_point found for stop ${stopId} (original: ${originalPointId})`);
+          }
+        }
+
+        // STEP 2: Passengers were already created before Nextmv
+        console.log(`✅ Passengers already created before Nextmv: ${passengerMap.size} total`);
+
+        // STEP 3: Create vehicles from local data
+        const vehicleMap = new MapConstructor<string, any>(); // Maps vehicle ID to DB vehicle record
+        
+        console.log(`Creating ${vehicles.length} vehicles...`);
+        
+        for (let index = 0; index < vehicles.length; index++) {
+          const localVehicle = vehicles[index];
+          const plate = localVehicle.name || localVehicle.id || `vehicle-${index}`;
+          
+          // Get the Nextmv vehicle ID that was sent in the payload
+          // This matches the ID format used in buildNextmvPayload: vehicle.id || `vehicle-${index}`
+          const nextmvVehicleId = String(localVehicle.id || `vehicle-${index}`);
+          
+          const { data: vehicleData, error: vehicleError } = await supabase
+            .from("vehicles")
+            .insert({
+              plate: plate,
+              capacity: localVehicle.capacity || 100,
+              max_distance: localVehicle.max_distance || 100,
+              nextmv_id: nextmvVehicleId, // Use the ID that was sent to Nextmv
+              start_latitude: localVehicle.start_location?.lat || null,
+              start_longitude: localVehicle.start_location?.lon || null,
+              end_latitude: localVehicle.end_location?.lat || null,
+              end_longitude: localVehicle.end_location?.lon || null,
+            })
+            .select()
+            .single();
+          
+          if (vehicleError) {
+            console.error(`Error creating vehicle ${plate}:`, vehicleError);
             continue;
           }
           
-          // Mark this vehicle as seen
-          seenVehiclesForDb.add(vehicleIdentifier);
-          
-          // originalVehicle is already declared above, reuse it
-          // Extract person assignments from route stops
-          const personAssignments: string[] = [];
-          if (vehicle.route) {
-            vehicle.route.forEach((routeStop: any) => {
-              const stopId = routeStop.stop?.id;
-              if (!stopId) return;
-              
-              // Extract person_id from encoded stop ID
-              let personId = extractPersonIdFromStopId(stopId);
-              
-              // Fallback: try to get from original point ID mapping
-              if (!personId) {
-                const originalPointId = extractOriginalPointId(stopId);
-                personId = pointIdToPersonMap.get(originalPointId);
-              }
-              
-              if (personId) {
-                personAssignments.push(personId);
-              }
-            });
+          if (vehicleData) {
+            // Map by the vehicle ID used in Nextmv payload (matches solution.vehicles[].id)
+            vehicleMap.set(nextmvVehicleId, vehicleData);
+            console.log(`Created vehicle ${vehicleData.id} (plate: ${plate}, nextmv_id: ${nextmvVehicleId})`);
           }
-          
-          // Extract route information from the vehicle object
-          const routeData = {
-            vehicle_id: originalVehicle?.id || null,
-            route_data: vehicle,
-            total_distance: vehicle.route_travel_distance || 0,
-            total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-            // Note: person_assignments column doesn't exist in the routes table
-            // If needed, this data can be stored in route_data JSON field
-          };
-
-          routeInserts.push(
-            supabase.from("routes").insert(routeData).select()
-          );
         }
 
-        console.log(`Attempting to insert ${routeInserts.length} routes...`);
-        const insertResults = await Promise.all(routeInserts);
-        const insertErrors = insertResults.filter((r: any) => r.error);
-        const successfulInserts = insertResults.filter((r: any) => !r.error && r.data);
+        // STEP 4: Create optimization record
+        let optimizationRecord: any = null;
+        if (nextmvRunId) {
+          console.log(`Creating optimization record with nextmv_id: ${nextmvRunId}`);
+          
+          const { data: optData, error: optError } = await supabase
+            .from("optimizations")
+            .insert({
+              nextmv_id: nextmvRunId,
+              result_json: data,
+            })
+            .select()
+            .single();
+          
+          if (optError) {
+            console.error(`Error creating optimization:`, optError);
+          } else if (optData) {
+            optimizationRecord = optData;
+            savedOptimizationId = optData.id; // Store for loading routes later
+            console.log(`Created optimization ${optData.id}`);
+          }
+        }
+
+        // STEP 5: Create routes from optimization result
+        const routeMap = new MapConstructor<string, any>(); // Maps route nextmv_id to DB route record
+        const stopOrderMap = new MapConstructor<string, number>(); // Maps stop nextmv_id to order number
         
-        if (insertErrors.length > 0) {
-          console.error(`Error inserting ${insertErrors.length} routes:`, insertErrors);
+        console.log(`Creating routes from solution...`);
+        
+        for (const vehicleRoute of solution.vehicles || []) {
+          const vehicleNextmvId = vehicleRoute.id;
+          const dbVehicle = vehicleMap.get(vehicleNextmvId);
+          
+          if (!dbVehicle) {
+            console.warn(`No database vehicle found for Nextmv vehicle ${vehicleNextmvId}`);
+            continue;
+          }
+          
+          // Generate route name
+          const routeName = `Route for ${dbVehicle.plate}`;
+          const routeNextmvId = `${nextmvRunId}-route-${vehicleNextmvId}`;
+          
+          // Extract distance and time from Nextmv result
+          const routeDistance = vehicleRoute.route_travel_distance || vehicleRoute.route_distance || 0;
+          const routeTime = vehicleRoute.route_travel_duration || vehicleRoute.route_duration || 0;
+          
+          // Convert to numeric values
+          const distanceValue = typeof routeDistance === 'string' ? parseFloat(routeDistance) : (routeDistance || 0);
+          const timeValue = typeof routeTime === 'string' ? parseFloat(routeTime) : (routeTime || 0);
+          
+          const { data: routeData, error: routeError } = await supabase
+            .from("routes")
+            .insert({
+              nextmv_id: routeNextmvId,
+              fk_vehicle: dbVehicle.id,
+              fk_optimization: optimizationRecord?.id || null,
+              name: routeName,
+              distance: distanceValue,
+              time: timeValue,
+            })
+            .select()
+            .single();
+          
+          if (routeError) {
+            console.error(`Error creating route for vehicle ${vehicleNextmvId}:`, routeError);
+            continue;
+          }
+          
+          if (routeData) {
+            routeMap.set(vehicleNextmvId, routeData);
+            console.log(`Created route ${routeData.id} for vehicle ${dbVehicle.plate}`);
+            
+            // STEP 6: Create stops from route
+            const routeStops = vehicleRoute.route || [];
+            let stopOrder = 0;
+            
+            for (const routeStop of routeStops) {
+              const stopNextmvId = routeStop.stop?.id;
+              if (!stopNextmvId || stopNextmvId.includes("-end")) continue;
+              
+              // Find the corresponding pickup_point using the stopIdToPickupPointMap
+              // This map was created by linking stop IDs to already-created pickup_points
+              let dbPickupPoint = stopIdToPickupPointMap.get(stopNextmvId);
+              
+              // If not found, try to find by original point ID
+              if (!dbPickupPoint) {
+                const originalStopId = extractOriginalPointId(stopNextmvId);
+                dbPickupPoint = localPointToDbPickupPointMap.get(originalStopId);
+              }
+              
+              if (!dbPickupPoint) {
+                console.warn(`⚠️ No pickup_point found for stop ${stopNextmvId}`);
+                continue;
+              }
+              
+              const { data: stopData, error: stopError } = await supabase
+                .from("stops")
+                .insert({
+                  nextmv_id: stopNextmvId,
+                  order: stopOrder++,
+                  fk_route: routeData.id,
+                  fk_pickup_point: dbPickupPoint.id,
+                })
+                .select()
+                .single();
+              
+              if (stopError) {
+                console.error(`Error creating stop ${stopNextmvId}:`, stopError);
+                continue;
+              }
+              
+              if (stopData) {
+                stopOrderMap.set(stopNextmvId, stopData.id);
+                console.log(`Created stop ${stopData.id} (order: ${stopOrder - 1})`);
+                
+                // STEP 7: Create stop_passenger records
+                // Find passengers for this pickup_point
+                const passengersForPoint = Array.from(passengerMap.values()).filter((p: any) => 
+                  p.fk_pickup_point === dbPickupPoint.id
+                );
+                
+                for (const passenger of passengersForPoint) {
+                  const { error: spError } = await supabase
+                    .from("stop_passenger")
+                    .insert({
+                      fk_stop: stopData.id,
+                      fk_passenger: passenger.id,
+                    });
+                  
+                  if (spError) {
+                    console.error(`Error creating stop_passenger for stop ${stopData.id} and passenger ${passenger.id}:`, spError);
+                  } else {
+                    console.log(`Created stop_passenger linking stop ${stopData.id} to passenger ${passenger.id}`);
+                  }
+                }
+              }
+            }
+          }
         }
         
-        console.log(`Insert results: ${successfulInserts.length} successful, ${insertErrors.length} failed out of ${routeInserts.length} total`);
-        
-        // Log details of first few inserts for debugging
-        insertResults.slice(0, 5).forEach((result: any, index: number) => {
-          if (result.error) {
-            console.error(`Route ${index} insert failed:`, result.error);
-          } else if (result.data) {
-            console.log(`Route ${index} inserted successfully, got ${result.data.length} record(s)`);
-          }
-        });
+        console.log("✅ Successfully saved all data to new database schema");
       } catch (dbError) {
-        console.error("Error saving routes to database:", dbError);
+        console.error("Error saving to new database schema:", dbError);
         // Don't throw - we still want to show the results even if saving fails
       }
 
-      // Immediately render routes from the solution data instead of waiting for database
-      // Filter to one route per vehicle (same logic as handleRunSelect)
-      const seenVehicles = new Set<string | null>();
-      const routesFromSolution = (solution.vehicles || [])
-        .filter((vehicle: any, index: number) => {
-          const vehicleId = vehicle.id || `vehicle-${index}`;
-          if (seenVehicles.has(vehicleId)) {
-            console.log(`Skipping duplicate vehicle ${vehicleId} in immediate render`);
-            return false;
-          }
-          seenVehicles.add(vehicleId);
-          return true;
-        })
-        .map((vehicle: any, filteredIndex: number) => {
-          // Find the original vehicle by matching the id
-          const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+      // Load routes from Supabase for the recently created optimization
+      if (savedOptimizationId) {
+        console.log(`Loading routes from Supabase for optimization ${savedOptimizationId}...`);
+        
+        try {
+          // Wait a bit for database to commit
+          await new Promise(resolve => setTimeout(resolve, 1000));
           
-          return {
-            id: `temp-${filteredIndex}-${Date.now()}`,
-            vehicle_id: originalVehicle?.id || null,
-            route_data: vehicle,
-            total_distance: vehicle.route_travel_distance || 0,
-            total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-            created_at: new Date().toISOString()
-          };
-        });
-
-      console.log(`Setting ${routesFromSolution.length} filtered routes from solution immediately (one per vehicle)`);
-      setRoutes(routesFromSolution);
-      // Initialize all routes as visible
-      setVisibleRoutes(new Set(routesFromSolution.map((_, index) => index)));
+          // Load routes with their stops and passengers using joins
+          const { data: routesData, error: routesError } = await supabase
+            .from("routes")
+            .select(`
+              *,
+              fk_vehicle:vehicles(*),
+              stops:stops(
+                *,
+                fk_pickup_point:pickup_points(*),
+                passengers:stop_passenger(
+                  fk_passenger:passengers(*)
+                )
+              )
+            `)
+            .eq("fk_optimization", savedOptimizationId)
+            .order("created_at", { ascending: false });
+          
+          if (routesError) {
+            console.error("Error loading routes from Supabase:", routesError);
+            throw routesError;
+          }
+          
+          if (!routesData || routesData.length === 0) {
+            console.warn("No routes found in database, using solution data as fallback");
+            // Fallback to solution data if database doesn't have routes yet
+            const seenVehicles = new Set<string | null>();
+            const routesFromSolution = (solution.vehicles || [])
+              .filter((vehicle: any, index: number) => {
+                const vehicleId = vehicle.id || `vehicle-${index}`;
+                if (seenVehicles.has(vehicleId)) return false;
+                seenVehicles.add(vehicleId);
+                return true;
+              })
+              .map((vehicle: any, filteredIndex: number) => {
+                const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+                return {
+                  id: `temp-${filteredIndex}-${Date.now()}`,
+                  vehicle_id: originalVehicle?.id || null,
+                  route_data: vehicle,
+                  total_distance: vehicle.route_travel_distance || 0,
+                  total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
+                  created_at: new Date().toISOString()
+                };
+              });
+            setRoutes(routesFromSolution);
+            setVisibleRoutes(new Set(routesFromSolution.map((_, index) => index)));
+          } else {
+            // Transform Supabase data to match expected format
+            const transformedRoutes = routesData.map((route: any) => {
+              // Build route_data from stops
+              const routeStops = (route.stops || []).sort((a: any, b: any) => a.order - b.order);
+              
+              // Get passengers for each stop from stop_passenger relation
+              const stopsWithPassengers = routeStops.map((stop: any) => {
+                // Extract passengers from stop_passenger relation
+                const passengers = (stop.passengers || [])
+                  .map((sp: any) => sp.fk_passenger)
+                  .filter(Boolean);
+                
+                return {
+                  stop: {
+                    id: stop.nextmv_id,
+                    location: stop.fk_pickup_point ? {
+                      lat: Number(stop.fk_pickup_point.latitude),
+                      lon: Number(stop.fk_pickup_point.longitude)
+                    } : null
+                  },
+                  passengers: passengers,
+                  pickup_point: stop.fk_pickup_point,
+                  order: stop.order
+                };
+              });
+              
+              // Get distance and time from Supabase routes table
+              // distance is stored in meters, time is stored in seconds
+              const routeDistance = route.distance ? Number(route.distance) : 0;
+              const routeTime = route.time ? Number(route.time) : 0;
+              
+              // Build route_data structure similar to Nextmv format
+              const routeData = {
+                id: route.fk_vehicle?.nextmv_id || route.nextmv_id,
+                route: stopsWithPassengers.map((s: any) => ({ stop: s.stop })),
+                route_travel_distance: routeDistance,
+                route_travel_duration: routeTime,
+              };
+              
+              return {
+                id: route.id,
+                vehicle_id: route.fk_vehicle?.id || null,
+                route_data: routeData,
+                stops: routeStops, // Include full stops with pickup_points and passengers from Supabase
+                total_distance: routeDistance,
+                total_duration: routeTime,
+                created_at: route.created_at,
+                name: route.name // Preserve route name from Supabase
+              };
+            });
+            
+            console.log(`✅ Loaded ${transformedRoutes.length} routes from Supabase with stops and passengers`);
+            setRoutes(transformedRoutes);
+            setVisibleRoutes(new Set(transformedRoutes.map((_, index) => index)));
+          }
+        } catch (loadError) {
+          console.error("Error loading routes from Supabase:", loadError);
+          // Fallback to solution data
+          const seenVehicles = new Set<string | null>();
+          const routesFromSolution = (solution.vehicles || [])
+            .filter((vehicle: any, index: number) => {
+              const vehicleId = vehicle.id || `vehicle-${index}`;
+              if (seenVehicles.has(vehicleId)) return false;
+              seenVehicles.add(vehicleId);
+              return true;
+            })
+            .map((vehicle: any, filteredIndex: number) => {
+              const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+              return {
+                id: `temp-${filteredIndex}-${Date.now()}`,
+                vehicle_id: originalVehicle?.id || null,
+                route_data: vehicle,
+                total_distance: vehicle.route_travel_distance || 0,
+                total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
+                created_at: new Date().toISOString()
+              };
+            });
+          setRoutes(routesFromSolution);
+          setVisibleRoutes(new Set(routesFromSolution.map((_, index) => index)));
+        }
+      } else {
+        // No optimization ID, use solution data as fallback
+        const seenVehicles = new Set<string | null>();
+        const routesFromSolution = (solution.vehicles || [])
+          .filter((vehicle: any, index: number) => {
+            const vehicleId = vehicle.id || `vehicle-${index}`;
+            if (seenVehicles.has(vehicleId)) return false;
+            seenVehicles.add(vehicleId);
+            return true;
+          })
+          .map((vehicle: any, filteredIndex: number) => {
+            const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+            return {
+              id: `temp-${filteredIndex}-${Date.now()}`,
+              vehicle_id: originalVehicle?.id || null,
+              route_data: vehicle,
+              total_distance: vehicle.route_travel_distance || 0,
+              total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
+              created_at: new Date().toISOString()
+            };
+          });
+        setRoutes(routesFromSolution);
+        setVisibleRoutes(new Set(routesFromSolution.map((_, index) => index)));
+      }
 
       toast({
         title: "Rutas optimizadas",
         description: "Las rutas han sido calculadas exitosamente",
       });
-
-      // In the background, wait for database to commit, then reload routes from database
-      // This ensures we have the proper IDs and database records
-      setTimeout(async () => {
-        const expectedRoutes = (solution.vehicles || []).length;
-        const routesToLoad = Math.max(expectedRoutes * 2, vehicles.length * 2, 200);
-        
-        let { data: routesData, error: routesError } = await supabase
-          .from("routes")
-          .select("*")
-          .order("created_at", { ascending: false })
-          .limit(routesToLoad);
-        
-        console.log(`Loading routes from database: Expected ${expectedRoutes}, Got ${routesData?.length || 0}`);
-        
-        if (!routesError && routesData && routesData.length > 0) {
-          console.log(`Updating routes with database records. Route data:`, routesData.map(r => ({ id: r.id, vehicle_id: r.vehicle_id, has_route_data: !!r.route_data })));
-          setRoutes(routesData);
-          setVisibleRoutes(new Set(routesData.map((_, index) => index)));
-        }
-      }, 1000);
       
       // Reload runs list to include the new run
       await loadRuns();
@@ -3667,6 +3910,11 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           };
 
           const getVehicleName = (routeIndex: number, route: any): string => {
+            // First, try to get route name from Supabase (highest priority)
+            if (route.name) {
+              return route.name;
+            }
+            
             // Debug logging
             console.log(`[getVehicleName] Route ${routeIndex}:`, {
               vehicle_id: route.vehicle_id,
@@ -3916,17 +4164,17 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                           const vehicle = getVehicleFromRoute(index, route);
                           const vehicleCapacity = vehicle?.capacity || 0;
                           
-                          // Get distance and duration
+                          // Get distance and duration from route (stored in meters and seconds)
                           const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
                           const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
                           
-                          // Format distance (convert meters to km if needed)
-                          const distanceKm = totalDistance > 1000 ? (totalDistance / 1000).toFixed(2) : totalDistance.toFixed(2);
-                          const distanceUnit = totalDistance > 1000 ? "km" : "m";
+                          // Convert distance from meters to km
+                          const distanceKm = (totalDistance / 1000).toFixed(2);
+                          const distanceUnit = "km";
                           
-                          // Format duration (convert seconds to minutes if needed)
-                          const durationMin = totalDuration > 60 ? (totalDuration / 60).toFixed(1) : totalDuration.toFixed(0);
-                          const durationUnit = totalDuration > 60 ? "min" : "seg";
+                          // Convert duration from seconds to minutes
+                          const durationMin = (totalDuration / 60).toFixed(1);
+                          const durationUnit = "min";
                           
                           return (
                             <div
@@ -4021,13 +4269,51 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                               ids.forEach(id => personIds.add(id));
                             }
                             
-                            // Get point name - prefer point name, fallback to generic name
-                            // For start points, use a special label
+                            // Get passengers from stop_passenger relation (if route was loaded from Supabase)
+                            const stopPassengers: Array<{ id: string; name: string; code: string | null }> = [];
+                            if (route.stops && Array.isArray(route.stops)) {
+                              // Find the stop in the route's stops array
+                              const dbStop = route.stops.find((s: any) => s.nextmv_id === stopId);
+                              if (dbStop && dbStop.passengers) {
+                                // Extract passengers from stop_passenger relation
+                                dbStop.passengers.forEach((sp: any) => {
+                                  const passenger = sp.fk_passenger;
+                                  if (passenger) {
+                                    stopPassengers.push({
+                                      id: passenger.id,
+                                      name: passenger.name,
+                                      code: passenger.code || null
+                                    });
+                                  }
+                                });
+                              }
+                            }
+                            
+                            // Use passengers from Supabase if available, otherwise fallback to personIds
+                            const finalPassengers = stopPassengers.length > 0 
+                              ? stopPassengers 
+                              : Array.from(personIds).map(id => ({ id, name: id, code: id }));
+                            
+                            // Get point address from Supabase pickup_point (preferred) or fallback to name
                             let pointName: string;
                             if (isStartPoint) {
-                              pointName = point?.name || "Punto de inicio";
+                              pointName = "Punto de inicio";
                             } else {
-                              pointName = point?.name || `Punto ${stopCounter}`;
+                              // Try to get address from Supabase stop's pickup_point
+                              if (route.stops && Array.isArray(route.stops)) {
+                                const dbStop = route.stops.find((s: any) => s.nextmv_id === stopId);
+                                if (dbStop && dbStop.fk_pickup_point && dbStop.fk_pickup_point.address) {
+                                  pointName = dbStop.fk_pickup_point.address;
+                                } else if (point?.address) {
+                                  pointName = point.address;
+                                } else {
+                                  pointName = point?.name || `Punto ${stopCounter}`;
+                                }
+                              } else if (point?.address) {
+                                pointName = point.address;
+                              } else {
+                                pointName = point?.name || `Punto ${stopCounter}`;
+                              }
                             }
                             
                             // Calculate stop index: start point is 0, others increment from 1
@@ -4041,7 +4327,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                               isStartPoint: isStartPoint,
                               stopId: originalPointId,
                               pointName: pointName,
-                              personIds: Array.from(personIds),
+                              personIds: Array.from(personIds), // Keep for backwards compatibility
+                              passengers: finalPassengers, // New field with passenger details
+                              quantity: point?.quantity || 1, // Get quantity from point
                               location: routeStop.stop?.location,
                             };
                           })
@@ -4051,6 +4339,41 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                             if (b.isStartPoint) return 1;
                             return a.stopIndex - b.stopIndex;
                           });
+                        
+                        // Add end point if vehicle has one
+                        const vehicle = getVehicleFromRoute(index, route);
+                        let finalStopsWithDetails = [...stopsWithDetails];
+                        
+                        // Check for end location from vehicle (Supabase or local)
+                        let endLocation: { lon: number; lat: number } | null = null;
+                        if (vehicle) {
+                          // Try Supabase vehicle data first (end_latitude, end_longitude)
+                          if (vehicle.end_latitude != null && vehicle.end_longitude != null) {
+                            endLocation = {
+                              lon: Number(vehicle.end_longitude),
+                              lat: Number(vehicle.end_latitude)
+                            };
+                          }
+                          // Fallback to local vehicle end_location
+                          else if (vehicle.end_location) {
+                            endLocation = vehicle.end_location;
+                          }
+                        }
+                        
+                        // If we have an end location, add it to the stop list
+                        if (endLocation) {
+                          finalStopsWithDetails.push({
+                            stopIndex: finalStopsWithDetails.length, // Add at the end
+                            isStartPoint: false,
+                            isEndPoint: true,
+                            stopId: 'end-point',
+                            pointName: 'Punto de fin',
+                            personIds: [],
+                            passengers: [],
+                            quantity: 0,
+                            location: endLocation,
+                          });
+                        }
                         
                         // Calculate route summary metrics
                         // Count actual stops (excluding start/end)
@@ -4062,8 +4385,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                         // Count passengers by extracting from route stops
                         const passengers = extractPassengersFromRoute(route);
                         const passengerCount = passengers.length;
-                        // Get vehicle capacity - use helper function for consistent lookup
-                        const vehicle = getVehicleFromRoute(index, route);
+                        // Get vehicle capacity (vehicle already defined above)
                         const vehicleCapacity = vehicle?.capacity || 0;
                         
                         // Get distance and duration
@@ -4132,7 +4454,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                               )}
                             </div>
                             <div className="space-y-2">
-                              {stopsWithDetails.map((stop, idx) => (
+                              {finalStopsWithDetails.map((stop, idx) => (
                                 <div 
                                   key={idx} 
                                   className="p-2 rounded-lg border bg-muted/50 cursor-pointer hover:bg-muted transition-colors"
@@ -4152,7 +4474,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                       className="w-6 h-6 rounded-full text-white flex items-center justify-center flex-shrink-0 text-xs font-semibold"
                                       style={{ backgroundColor: color }}
                                     >
-                                      {stop.isStartPoint ? "S" : stop.stopIndex}
+                                      {stop.isStartPoint ? "S" : stop.isEndPoint ? "F" : stop.stopIndex}
                                     </div>
                                     <div className="flex-1 min-w-0">
                                       <p className="font-medium text-sm">
@@ -4162,22 +4484,49 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                   </div>
                                   {stop.isStartPoint ? (
                                     <p className="text-xs text-muted-foreground italic ml-8">Punto de inicio - Sin pasajeros</p>
-                                  ) : stop.personIds.length > 0 ? (
-                                    <div className="mt-1 ml-8">
-                                      <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
-                                      <div className="flex flex-wrap gap-1">
-                                        {stop.personIds.map((personId, pIdx) => (
-                                          <span
-                                            key={pIdx}
-                                            className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
-                                          >
-                                            {personId}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    </div>
+                                  ) : stop.isEndPoint ? (
+                                    <p className="text-xs text-muted-foreground italic ml-8">Punto de fin - Sin pasajeros</p>
                                   ) : (
-                                    <p className="text-xs text-muted-foreground italic ml-8">Sin pasajeros asignados</p>
+                                    <div className="mt-1 ml-8 space-y-1">
+                                      <div className="flex items-center gap-2">
+                                        <p className="text-xs font-semibold text-muted-foreground">Cantidad:</p>
+                                        <span className="text-xs px-2 py-0.5 bg-secondary text-secondary-foreground rounded font-semibold">
+                                          {stop.quantity || 1}
+                                        </span>
+                                      </div>
+                                      {stop.passengers && stop.passengers.length > 0 ? (
+                                        <div>
+                                          <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {stop.passengers.map((passenger: any, pIdx: number) => (
+                                              <span
+                                                key={pIdx}
+                                                className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
+                                                title={passenger.code ? `ID: ${passenger.code}` : undefined}
+                                              >
+                                                {passenger.name} {passenger.code ? `(${passenger.code})` : ''}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ) : stop.personIds && stop.personIds.length > 0 ? (
+                                        <div>
+                                          <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
+                                          <div className="flex flex-wrap gap-1">
+                                            {stop.personIds.map((personId, pIdx) => (
+                                              <span
+                                                key={pIdx}
+                                                className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
+                                              >
+                                                {personId}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <p className="text-xs text-muted-foreground italic">Sin pasajeros asignados</p>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
                               ))}
