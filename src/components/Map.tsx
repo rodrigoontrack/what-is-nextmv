@@ -10,6 +10,8 @@ interface PickupPoint {
   quantity?: number;
   person_id?: string;
   grupo?: string;
+  group?: string; // Group identifier (local only)
+  group_color?: string; // Group color (local only)
 }
 
 interface Vehicle {
@@ -42,15 +44,20 @@ interface MapProps {
   selectedRouteIndex?: number | null; // Index of the selected route to zoom to and highlight
   focusLocation?: { lon: number; lat: number } | null; // Specific location to zoom to
   zoomToRoute?: number | null; // Trigger to zoom to a specific route
+  polygonMode?: boolean; // Enable polygon drawing mode
+  onPolygonComplete?: (polygon: number[][]) => void; // Callback when polygon is completed
 }
 
 const MAPBOX_TOKEN = "pk.eyJ1Ijoicm9kcmlnb2l2YW5mIiwiYSI6ImNtaHhoOHk4azAxNjcyanExb2E2dHl6OTMifQ.VO6hcKB-pIDvb8ZFFpLdfw";
 
-const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, focusLocation, zoomToRoute }: MapProps) => {
+const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, focusLocation, zoomToRoute, polygonMode = false, onPolygonComplete }: MapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const [mapLoaded, setMapLoaded] = useState(false);
+  const polygonPointsRef = useRef<number[][]>([]);
+  const polygonMarkersRef = useRef<mapboxgl.Marker[]>([]);
+  const polygonLineRef = useRef<mapboxgl.Marker | null>(null);
 
   useEffect(() => {
     if (!mapContainer.current || map.current) return;
@@ -85,6 +92,94 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
     if (!map.current || !mapLoaded) return;
 
     const clickHandler = (e: mapboxgl.MapMouseEvent) => {
+      // Handle polygon mode
+      if (polygonMode) {
+        const lng = e.lngLat.lng;
+        const lat = e.lngLat.lat;
+        polygonPointsRef.current.push([lng, lat]);
+        
+        // Add marker for the point
+        const el = document.createElement("div");
+        el.className = "w-3 h-3 bg-blue-500 rounded-full border-2 border-white cursor-pointer";
+        const marker = new mapboxgl.Marker(el)
+          .setLngLat([lng, lat])
+          .addTo(map.current!);
+        polygonMarkersRef.current.push(marker);
+        
+        // Update polygon line if we have at least 2 points
+        if (polygonPointsRef.current.length >= 2) {
+          // Remove old line if exists
+          if (map.current.getSource("polygon-line")) {
+            map.current.removeLayer("polygon-line");
+            map.current.removeSource("polygon-line");
+          }
+          
+          // Add line connecting points
+          const lineCoordinates = [...polygonPointsRef.current];
+          if (polygonPointsRef.current.length >= 3) {
+            // Close the polygon
+            lineCoordinates.push(polygonPointsRef.current[0]);
+          }
+          
+          map.current.addSource("polygon-line", {
+            type: "geojson",
+            data: {
+              type: "Feature",
+              geometry: {
+                type: "LineString",
+                coordinates: lineCoordinates
+              }
+            }
+          });
+          
+          map.current.addLayer({
+            id: "polygon-line",
+            type: "line",
+            source: "polygon-line",
+            layout: {
+              "line-join": "round",
+              "line-cap": "round"
+            },
+            paint: {
+              "line-color": "#3b82f6",
+              "line-width": 2,
+              "line-dasharray": [2, 2]
+            }
+          });
+          
+          // If we have at least 3 points, check if we should complete the polygon
+          if (polygonPointsRef.current.length >= 3 && onPolygonComplete) {
+            // Check if click is near the first point (within 20 pixels)
+            const firstPoint = polygonPointsRef.current[0];
+            const point = map.current.project([firstPoint[0], firstPoint[1]]);
+            const clickPoint = map.current.project([lng, lat]);
+            const distance = Math.sqrt(
+              Math.pow(point.x - clickPoint.x, 2) + Math.pow(point.y - clickPoint.y, 2)
+            );
+            
+            if (distance < 20) {
+              // Complete the polygon
+              const completedPolygon = [...polygonPointsRef.current];
+              onPolygonComplete(completedPolygon);
+              
+              // Clean up
+              polygonPointsRef.current = [];
+              polygonMarkersRef.current.forEach(m => m.remove());
+              polygonMarkersRef.current = [];
+              if (map.current.getSource("polygon-line")) {
+                map.current.removeLayer("polygon-line");
+                map.current.removeSource("polygon-line");
+              }
+              if (map.current.getSource("polygon-fill")) {
+                map.current.removeLayer("polygon-fill");
+                map.current.removeSource("polygon-fill");
+              }
+            }
+          }
+        }
+        return;
+      }
+      
       // Only call onMapClick if clickMode is enabled or vehicle location mode is active
       if (onMapClick && (clickMode || vehicleLocationMode !== null)) {
         onMapClick(e.lngLat.lng, e.lngLat.lat);
@@ -96,7 +191,27 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
     return () => {
       map.current?.off("click", clickHandler);
     };
-  }, [onMapClick, clickMode, mapLoaded, vehicleLocationMode]);
+  }, [onMapClick, clickMode, mapLoaded, vehicleLocationMode, polygonMode, onPolygonComplete]);
+  
+  // Clean up polygon when polygonMode is disabled
+  useEffect(() => {
+    if (!map.current || !mapLoaded) return;
+    
+    if (!polygonMode) {
+      // Clean up polygon drawing
+      polygonPointsRef.current = [];
+      polygonMarkersRef.current.forEach(m => m.remove());
+      polygonMarkersRef.current = [];
+      if (map.current.getSource("polygon-line")) {
+        map.current.removeLayer("polygon-line");
+        map.current.removeSource("polygon-line");
+      }
+      if (map.current.getSource("polygon-fill")) {
+        map.current.removeLayer("polygon-fill");
+        map.current.removeSource("polygon-fill");
+      }
+    }
+  }, [polygonMode, mapLoaded]);
 
   useEffect(() => {
     if (!map.current || !mapLoaded) return;
@@ -372,10 +487,58 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
         }
       }
       
+      // Find passenger names and address from routes
+      let passengerNames: string[] = [];
+      let markerAddress: string | null = null;
+      
+      if (routes.length > 0) {
+        for (const route of routes) {
+          const routeStops = route.stops || [];
+          for (const stop of routeStops) {
+            const stopId = stop.nextmv_id || stop.id;
+            const originalPointId = extractOriginalPointId(stopId);
+            
+            if (originalPointId === pointId || stopId === pointId) {
+              // Get address from pickup_point
+              if (stop.fk_pickup_point) {
+                markerAddress = stop.fk_pickup_point.address || null;
+              }
+              
+              // Get passenger names
+              if (stop.passengers && Array.isArray(stop.passengers)) {
+                const names = stop.passengers
+                  .map((sp: any) => {
+                    const passenger = sp.fk_passenger || sp;
+                    return passenger?.name || null;
+                  })
+                  .filter((name: string | null) => name !== null);
+                passengerNames = [...new Set([...passengerNames, ...names])]; // Remove duplicates
+              }
+              
+              break;
+            }
+          }
+          if (markerAddress || passengerNames.length > 0) break;
+        }
+      }
+      
+      // Use point address if not found in routes
+      if (!markerAddress && point.address && point.address !== `${pointLocation.lat}, ${pointLocation.lon}`) {
+        markerAddress = point.address;
+      }
+      
       const el = document.createElement("div");
       
-      // Determine marker color: use route color if point belongs to a route, otherwise use primary color
-      const markerColor = routeIndex !== undefined ? routeColors[routeIndex % routeColors.length] : undefined;
+      // Determine marker color: prioritize pickup point's group_color, then route color, then primary
+      let markerColor: string | undefined = undefined;
+      
+      // First check if the pickup point has a group_color (local assignment)
+      if (point && point.group_color) {
+        markerColor = point.group_color;
+      } else if (routeIndex !== undefined) {
+        // Use route color if point belongs to a route
+        markerColor = routeColors[routeIndex % routeColors.length];
+      }
       
       // Determine marker size based on number (larger for double digits)
       const displayNumber = isStartPoint ? "S" : (orderNumber !== undefined ? String(orderNumber) : "📍");
@@ -386,7 +549,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       // Set base classes
       el.className = `${markerSize} rounded-full border-4 border-white shadow-lg flex items-center justify-center text-white font-bold ${textSize}`;
       
-      // Set background color: use inline style for route colors, or default to primary
+      // Set background color: use inline style for group/route colors, or default to primary
       if (markerColor) {
         el.style.backgroundColor = markerColor;
       } else {
@@ -402,19 +565,37 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
         el.textContent = "📍";
       }
 
+      // Build popup HTML with passenger names and address
+      let popupHTML = `<div class="p-2">
+        <h3 class="font-bold">${point.name}</h3>
+        ${isStartPoint ? `<p class="text-sm font-semibold">Punto de inicio</p>` : orderNumber !== undefined ? `<p class="text-sm font-semibold">Orden: ${orderNumber}</p>` : ''}`;
+      
+      if (markerAddress) {
+        popupHTML += `<p class="text-sm mt-1"><span class="font-semibold">Dirección:</span> ${markerAddress}</p>`;
+      }
+      
+      if (passengerNames.length > 0) {
+        popupHTML += `<div class="mt-2">
+          <p class="text-sm font-semibold mb-1">Pasajeros:</p>
+          <div class="flex flex-wrap gap-1">`;
+        passengerNames.forEach((name) => {
+          popupHTML += `<span class="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded">${name}</span>`;
+        });
+        popupHTML += `</div></div>`;
+      } else if (!isStartPoint && point.quantity !== undefined) {
+        popupHTML += `<p class="text-sm mt-1"><span class="font-semibold">Cantidad:</span> ${point.quantity}</p>`;
+      }
+      
+      if (isStartPoint) {
+        popupHTML += `<p class="text-sm text-muted-foreground mt-1">Sin pasajeros</p>`;
+      }
+      
+      popupHTML += `</div>`;
+
       const marker = new mapboxgl.Marker(el)
         .setLngLat([pointLocation.lon, pointLocation.lat])
         .setPopup(
-          new mapboxgl.Popup({ offset: 25 }).setHTML(
-            `<div class="p-2">
-              <h3 class="font-bold">${point.name}</h3>
-              ${isStartPoint ? `<p class="text-sm font-semibold">Punto de inicio</p>` : orderNumber !== undefined ? `<p class="text-sm font-semibold">Orden: ${orderNumber}</p>` : ''}
-              <p class="text-sm">${pointLocation.lat}, ${pointLocation.lon}</p>
-              ${point.address && point.address !== `${pointLocation.lat}, ${pointLocation.lon}` ? `<p class="text-sm">Dirección: ${point.address}</p>` : ''}
-              ${point.quantity !== undefined ? `<p class="text-sm">Cantidad: ${point.quantity}</p>` : ''}
-              ${isStartPoint ? `<p class="text-sm text-muted-foreground">Sin pasajeros</p>` : ''}
-            </div>`
-          )
+          new mapboxgl.Popup({ offset: 25 }).setHTML(popupHTML)
         )
         .addTo(map.current!);
       markersRef.current.push(marker);

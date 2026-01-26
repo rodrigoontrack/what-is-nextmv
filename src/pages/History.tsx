@@ -735,8 +735,29 @@ const HistoryPage = () => {
     }
   };
 
-  const handleExportToKML = () => {
-    if (!selectedRunData) {
+  // Helper function to convert hex color to KML format (ABGR)
+  const hexToKMLColor = (hex: string, opacity: number = 255): string => {
+    // Remove # if present
+    hex = hex.replace('#', '');
+    // Parse RGB
+    const r = parseInt(hex.substring(0, 2), 16);
+    const g = parseInt(hex.substring(2, 4), 16);
+    const b = parseInt(hex.substring(4, 6), 16);
+    // Convert to ABGR (Alpha, Blue, Green, Red)
+    return `${opacity.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${r.toString(16).padStart(2, '0')}`.toUpperCase();
+  };
+
+  const handleExportToKML = async () => {
+    console.log("handleExportToKML called", {
+      hasSelectedRunData: !!selectedRunData,
+      routesCount: routes.length,
+      selectedRunId,
+      selectedOptimizationRunId
+    });
+    
+    // Check if we have routes loaded (either from selectedRunData or from Supabase)
+    if (!selectedRunData && routes.length === 0) {
+      console.error("No data available for export");
       toast({
         title: "Error",
         description: "No hay datos de optimización para exportar",
@@ -744,10 +765,626 @@ const HistoryPage = () => {
       });
       return;
     }
-    toast({
-      title: "Exportación",
-      description: "Funcionalidad de exportación a KML (implementar según necesidad)",
-    });
+
+    try {
+      // Prioritize routes loaded from Supabase (more reliable for previously loaded optimizations)
+      let solutions: any[] = [];
+      
+      if (routes.length > 0) {
+        // Build solutions structure from routes (works for both newly run and loaded optimizations)
+        // Routes from Supabase have route_data.route which contains stops with stop.location
+        console.log("Building solutions from routes. Routes count:", routes.length);
+        console.log("Sample route structure:", routes[0]);
+        
+        try {
+          solutions = [{
+            vehicles: routes.map((route: any, routeIndex: number) => {
+              try {
+                // Parse route_data if it's a string (JSONB from Supabase)
+                let routeData = route.route_data;
+                if (typeof routeData === 'string') {
+                  try {
+                    routeData = JSON.parse(routeData);
+                  } catch (e) {
+                    console.warn(`Failed to parse route_data as JSON for route ${routeIndex}:`, e);
+                    routeData = null;
+                  }
+                }
+                
+                // Get route stops from route_data.route
+                // The route_data.route already has stops in format { stop: { id, location } }
+                let routeStops = routeData?.route || [];
+                
+                // If route_data.route is empty, try to build from stops array
+                if (routeStops.length === 0 && route.stops && Array.isArray(route.stops)) {
+                  console.log(`Route ${routeIndex} has no route_data.route, building from stops array`);
+                  routeStops = route.stops.map((stop: any) => {
+                    // Try to get location from fk_pickup_point first
+                    let location = null;
+                    if (stop.fk_pickup_point) {
+                      const lat = stop.fk_pickup_point.latitude;
+                      const lon = stop.fk_pickup_point.longitude;
+                      if (lat != null && lon != null) {
+                        location = {
+                          lat: Number(lat),
+                          lon: Number(lon)
+                        };
+                      }
+                    }
+                    
+                    // Fallback to stop's own location fields if available
+                    if (!location && stop.latitude != null && stop.longitude != null) {
+                      location = {
+                        lat: Number(stop.latitude),
+                        lon: Number(stop.longitude)
+                      };
+                    }
+                    
+                    return {
+                      stop: {
+                        id: stop.nextmv_id || stop.id,
+                        location: location
+                      }
+                    };
+                  });
+                }
+                
+                console.log(`Route ${routeIndex}:`, {
+                  routeId: route.id,
+                  routeDataId: routeData?.id,
+                  routeStopsCount: routeStops.length,
+                  firstStop: routeStops[0],
+                  hasRouteData: !!routeData,
+                  hasStops: !!route.stops
+                });
+                
+                // Validate and filter stops with valid locations
+                const validStops = routeStops.filter((routeStop: any) => {
+                  const location = routeStop.stop?.location;
+                  const isValid = location && location.lat != null && location.lon != null;
+                  if (!isValid) {
+                    console.warn(`Invalid stop in route ${routeIndex}:`, routeStop);
+                  }
+                  return isValid;
+                });
+                
+                if (validStops.length === 0) {
+                  console.warn(`Route ${route.id} has no valid stops with locations`);
+                }
+                
+                return {
+                  id: routeData?.id || route.vehicle_id || `vehicle-${routeIndex}`,
+                  route: validStops, // Filter out stops without valid locations
+                  _routeIndex: routeIndex, // Store original route index for matching
+                  _route: route // Store route reference for accessing fk_vehicle
+                };
+              } catch (error) {
+                console.error(`Error processing route ${routeIndex}:`, error);
+                // Return empty route to avoid breaking the entire export
+                return {
+                  id: route.vehicle_id || `vehicle-${routeIndex}`,
+                  route: [],
+                  _routeIndex: routeIndex,
+                  _route: route
+                };
+              }
+            }).filter((vehicle: any) => vehicle.route.length > 0) // Only include vehicles with valid stops
+          }];
+          console.log("Built solutions from routes:", solutions);
+          console.log("Total vehicles in solutions:", solutions[0]?.vehicles?.length || 0);
+        } catch (error) {
+          console.error("Error building solutions from routes:", error);
+          throw error; // Re-throw to be caught by outer catch
+        }
+      } else if (selectedRunData) {
+        // Fallback to selectedRunData if routes are not available
+        solutions = selectedRunData.output?.solutions || selectedRunData.solutions || [];
+      }
+      
+      if (solutions.length === 0 || (solutions[0]?.vehicles?.length || 0) === 0) {
+        console.error("No solutions available for export:", {
+          solutionsLength: solutions.length,
+          vehiclesCount: solutions[0]?.vehicles?.length || 0,
+          routesCount: routes.length,
+          hasSelectedRunData: !!selectedRunData
+        });
+        toast({
+          title: "Error",
+          description: "No hay soluciones disponibles para exportar. Verifique que las rutas tengan paradas válidas.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      // Show loading toast
+      toast({
+        title: "Generando KML",
+        description: "Obteniendo rutas de Mapbox...",
+      });
+
+      // Mapbox token (same as in Map component)
+      const MAPBOX_TOKEN = "pk.eyJ1Ijoicm9kcmlnb2l2YW5mIiwiYSI6ImNtaHhoOHk4azAxNjcyanExb2E2dHl6OTMifQ.VO6hcKB-pIDvb8ZFFpLdfw";
+
+      // Color palette matching the map colors
+      const routeColors = [
+        "#26bc30", // Green
+        "#3b82f6", // Blue
+        "#f59e0b", // Amber
+        "#ef4444", // Red
+        "#8b5cf6", // Purple
+        "#ec4899", // Pink
+        "#06b6d4", // Cyan
+        "#84cc16", // Lime
+      ];
+
+      // Start building KML
+      const runId = selectedRunId || selectedOptimizationRunId || 'N/A';
+      let kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <name>Optimización de Rutas - ${runId}</name>
+    <description>Rutas generadas por NextMV con rutas de Mapbox</description>
+`;
+
+      // Add styles for each vehicle route
+      let globalRouteIndex = 0;
+      solutions.forEach((solution: any, solutionIndex: number) => {
+        const solutionVehicles = solution.vehicles || [];
+        solutionVehicles.forEach((vehicle: any, vehicleIndex: number) => {
+          const colorIndex = globalRouteIndex % routeColors.length;
+          const color = routeColors[colorIndex];
+          const kmlColor = hexToKMLColor(color, 200); // 200 opacity for routes
+          const kmlColorOpaque = hexToKMLColor(color, 255); // Full opacity for placemarks
+          
+          const styleId = `route-${solutionIndex}-${vehicleIndex}`;
+          kml += `    <Style id="${styleId}">
+      <LineStyle>
+        <color>${kmlColor}</color>
+        <width>4</width>
+      </LineStyle>
+      <PolyStyle>
+        <color>${kmlColorOpaque}</color>
+      </PolyStyle>
+    </Style>
+`;
+          globalRouteIndex++;
+        });
+      });
+
+      // Fetch Mapbox routes for all vehicles in parallel
+      const routePromises: Promise<{ solutionIndex: number; vehicleIndex: number; vehicle: any; geometry: any }>[] = [];
+      globalRouteIndex = 0;
+      
+      solutions.forEach((solution: any, solutionIndex: number) => {
+        const solutionVehicles = solution.vehicles || [];
+        
+        solutionVehicles.forEach((vehicle: any, vehicleIndex: number) => {
+          const vehicleRoute = vehicle.route || [];
+          
+          if (vehicleRoute.length >= 2) {
+            // Build waypoints for Mapbox Directions API
+            const coordinates: number[][] = [];
+            vehicleRoute.forEach((routeStop: any) => {
+              const location = routeStop.stop?.location;
+              if (location && location.lat && location.lon) {
+                coordinates.push([location.lon, location.lat]);
+              }
+            });
+
+            if (coordinates.length >= 2) {
+              const waypoints = coordinates.map(coord => `${coord[0]},${coord[1]}`).join(';');
+              const directionsUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${waypoints}?geometries=geojson&access_token=${MAPBOX_TOKEN}`;
+              
+              routePromises.push(
+                fetch(directionsUrl)
+                  .then(response => {
+                    if (!response.ok) {
+                      console.warn(`Mapbox API error for vehicle ${vehicle.id || vehicleIndex}: ${response.status} ${response.statusText}`);
+                      throw new Error(`Mapbox API error: ${response.status}`);
+                    }
+                    return response.json();
+                  })
+                  .then(data => {
+                    console.log(`Mapbox response for vehicle ${vehicle.id || vehicleIndex}:`, {
+                      code: data.code,
+                      hasRoutes: !!(data.routes && data.routes.length > 0),
+                      hasGeometry: !!(data.routes && data.routes[0] && data.routes[0].geometry),
+                      geometryType: data.routes?.[0]?.geometry?.type,
+                      coordCount: data.routes?.[0]?.geometry?.coordinates?.length
+                    });
+                    
+                    if (data.code === 'Ok' && data.routes && data.routes.length > 0 && data.routes[0].geometry) {
+                      const geometry = data.routes[0].geometry;
+                      // Ensure we have valid coordinates
+                      if (geometry.coordinates && geometry.coordinates.length > 0) {
+                        return {
+                          solutionIndex,
+                          vehicleIndex,
+                          vehicle,
+                          geometry: geometry
+                        };
+                      }
+                    }
+                    
+                    // Fallback to straight line
+                    console.warn(`Using fallback straight line for vehicle ${vehicle.id || vehicleIndex}`);
+                    return {
+                      solutionIndex,
+                      vehicleIndex,
+                      vehicle,
+                      geometry: {
+                        type: "LineString",
+                        coordinates: coordinates
+                      }
+                    };
+                  })
+                  .catch(error => {
+                    console.error(`Error fetching Mapbox route for vehicle ${vehicle.id || vehicleIndex}:`, error);
+                    // Fallback to straight line
+                    return {
+                      solutionIndex,
+                      vehicleIndex,
+                      vehicle,
+                      geometry: {
+                        type: "LineString",
+                        coordinates: coordinates
+                      }
+                    };
+                  })
+              );
+            } else {
+              // Not enough coordinates, use straight line
+              routePromises.push(Promise.resolve({
+                solutionIndex,
+                vehicleIndex,
+                vehicle,
+                geometry: {
+                  type: "LineString",
+                  coordinates: coordinates.length > 0 ? coordinates : []
+                }
+              }));
+            }
+          } else {
+            // Not enough stops, skip route line
+            routePromises.push(Promise.resolve({
+              solutionIndex,
+              vehicleIndex,
+              vehicle,
+              geometry: null
+            }));
+          }
+          
+          globalRouteIndex++;
+        });
+      });
+
+      // Wait for all Mapbox route fetches to complete
+      console.log(`Waiting for ${routePromises.length} Mapbox route fetches...`);
+      const routeData = await Promise.all(routePromises);
+      console.log(`Completed ${routeData.length} route fetches. Results:`, routeData.map(r => ({
+        solution: r.solutionIndex,
+        vehicle: r.vehicleIndex,
+        hasGeometry: !!r.geometry,
+        coordCount: r.geometry?.coordinates?.length || 0,
+        geometryType: r.geometry?.type
+      })));
+
+      // Helper functions to extract person_id
+      const extractPersonIdFromStopId = (stopId: string): string | undefined => {
+        if (!stopId) return undefined;
+        const match = stopId.match(/__person_(.+)$/);
+        return match ? match[1] : undefined;
+      };
+      
+      const MapConstructorForKML = globalThis.Map || window.Map;
+      const pointIdToPersonMapForKML = new MapConstructorForKML<string, string>();
+      pickupPoints.forEach((point) => {
+        if (point.person_id) {
+          pointIdToPersonMapForKML.set(point.id, point.person_id);
+        }
+      });
+      
+      const extractOriginalPointId = (stopId: string): string => {
+        if (!stopId) return stopId;
+        const index = stopId.indexOf('__person_');
+        return index > -1 ? stopId.substring(0, index) : stopId;
+      };
+
+      // Process all solutions and vehicles
+      globalRouteIndex = 0;
+      solutions.forEach((solution: any, solutionIndex: number) => {
+        const solutionVehicles = solution.vehicles || [];
+        
+        solutionVehicles.forEach((vehicle: any, vehicleIndex: number) => {
+          // Get route name - prioritize route.name (e.g., "Route for AAA120") as shown in web interface
+          let routeName = `Vehículo ${vehicleIndex + 1}`;
+          
+          // First priority: get route name from stored route reference (matches web interface)
+          if (vehicle._route?.name) {
+            routeName = vehicle._route.name;
+          } else if (routes.length > 0 && vehicle._routeIndex !== undefined && routes[vehicle._routeIndex]) {
+            // Fallback: use stored route index to get route
+            const route = routes[vehicle._routeIndex];
+            if (route.name) {
+              routeName = route.name;
+            } else if (route.fk_vehicle?.name) {
+              // If no route.name, construct it like the web interface: "Route for {plate}"
+              routeName = `Route for ${route.fk_vehicle.name}`;
+            } else if (route.vehicle_id) {
+              const vehicleInfo = vehicles.find(v => v.id === route.vehicle_id);
+              if (vehicleInfo?.name) {
+                routeName = `Route for ${vehicleInfo.name}`;
+              }
+            }
+          }
+          
+          // If still not found, try matching with vehicles array by vehicle.id
+          if (routeName === `Vehículo ${vehicleIndex + 1}`) {
+            const vehicleInfo = vehicles.find(v => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+            if (vehicleInfo?.name) {
+              routeName = `Route for ${vehicleInfo.name}`;
+            } else if (vehicle.id && vehicle.id !== `vehicle-${vehicleIndex}`) {
+              routeName = `Route for ${vehicle.id}`;
+            }
+          }
+          
+          const vehicleRoute = vehicle.route || [];
+          const routeInfo = routeData.find(r => r.solutionIndex === solutionIndex && r.vehicleIndex === vehicleIndex);
+          const styleId = `route-${solutionIndex}-${vehicleIndex}`;
+          
+          // Debug: Log route info
+          console.log(`Processing vehicle ${vehicle.id || vehicleIndex} (solution ${solutionIndex}, vehicle ${vehicleIndex}):`, {
+            hasRouteInfo: !!routeInfo,
+            hasGeometry: !!(routeInfo?.geometry),
+            coordCount: routeInfo?.geometry?.coordinates?.length || 0,
+            geometryType: routeInfo?.geometry?.type
+          });
+          
+          // Create folder for this vehicle route with route name
+          kml += `    <Folder>
+      <name>${routeName} - Solución ${solutionIndex + 1}</name>
+      <description>${routeName} (ID: ${vehicle.id || vehicleIndex + 1})</description>
+`;
+
+          // Create route path (LineString) using Mapbox geometry
+          if (routeInfo && routeInfo.geometry && routeInfo.geometry.coordinates && Array.isArray(routeInfo.geometry.coordinates) && routeInfo.geometry.coordinates.length > 0) {
+            // Convert GeoJSON coordinates (lon,lat) to KML format (lon,lat,altitude)
+            const geoJsonCoords = routeInfo.geometry.coordinates;
+            console.log(`Using Mapbox geometry for vehicle ${vehicle.id || vehicleIndex}: ${geoJsonCoords.length} coordinates, first:`, geoJsonCoords[0]);
+            
+            const kmlCoordinates = geoJsonCoords
+              .map((coord: number[]) => {
+                // Handle both [lon, lat] and [lon, lat, elevation] formats
+                const lon = coord[0];
+                const lat = coord[1];
+                const alt = coord.length > 2 ? coord[2] : 0;
+                // KML format: longitude,latitude,altitude (space-separated)
+                return `${lon},${lat},${alt}`;
+              })
+              .join(' ');
+
+            kml += `      <Placemark>
+        <name>${routeName}</name>
+        <description>${routeName} (generada por Mapbox - ${geoJsonCoords.length} puntos)</description>
+        <styleUrl>#${styleId}</styleUrl>
+        <LineString>
+          <tessellate>1</tessellate>
+          <coordinates>${kmlCoordinates}</coordinates>
+        </LineString>
+      </Placemark>
+`;
+          } else {
+            console.warn(`No Mapbox geometry for vehicle ${vehicle.id || vehicleIndex}, routeInfo:`, routeInfo);
+            if (vehicleRoute.length > 0) {
+              // Fallback: use stop coordinates if Mapbox route not available
+              const coordinates: string[] = [];
+              vehicleRoute.forEach((routeStop: any) => {
+                const location = routeStop.stop?.location;
+                if (location && location.lat && location.lon) {
+                  coordinates.push(`${location.lon},${location.lat},0`);
+                }
+              });
+
+              if (coordinates.length > 0) {
+                kml += `      <Placemark>
+        <name>${routeName}</name>
+        <description>${routeName} (línea recta - Mapbox no disponible)</description>
+        <styleUrl>#${styleId}</styleUrl>
+        <LineString>
+          <tessellate>1</tessellate>
+          <coordinates>${coordinates.join(' ')}</coordinates>
+        </LineString>
+      </Placemark>
+`;
+              }
+            }
+          }
+
+          // Create placemarks for each stop (always create these, regardless of route type)
+          if (vehicleRoute && vehicleRoute.length > 0) {
+            console.log(`Creating ${vehicleRoute.length} stop placemarks for vehicle ${vehicle.id || vehicleIndex}`);
+            vehicleRoute.forEach((routeStop: any, stopIndex: number) => {
+              const stop = routeStop.stop || {};
+              const location = stop.location;
+              
+              if (location && location.lat && location.lon) {
+                const originalPointId = extractOriginalPointId(stop.id || '');
+                const originalPoint = pickupPoints.find(p => p.id === originalPointId);
+                
+                // Try to get passenger names and address from loaded routes
+                let passengerNames: string[] = [];
+                let stopAddress: string | null = null;
+                
+                // Check if we have routes with stops data (from loaded optimizations)
+                if (routes.length > 0) {
+                  for (const loadedRoute of routes) {
+                    const routeStops = loadedRoute.stops || [];
+                    for (const loadedStop of routeStops) {
+                      const loadedStopId = loadedStop.nextmv_id || loadedStop.id;
+                      const loadedOriginalPointId = extractOriginalPointId(loadedStopId);
+                      
+                      if (loadedOriginalPointId === originalPointId || loadedStopId === stop.id) {
+                        // Get address from pickup_point
+                        if (loadedStop.fk_pickup_point) {
+                          stopAddress = loadedStop.fk_pickup_point.address || null;
+                        }
+                        
+                        // Get passenger names
+                        if (loadedStop.passengers && Array.isArray(loadedStop.passengers)) {
+                          const names = loadedStop.passengers
+                            .map((sp: any) => {
+                              const passenger = sp.fk_passenger || sp;
+                              return passenger?.name || null;
+                            })
+                            .filter((name: string | null) => name !== null);
+                          passengerNames = [...new Set([...passengerNames, ...names])]; // Remove duplicates
+                        }
+                        break;
+                      }
+                    }
+                    if (stopAddress || passengerNames.length > 0) break;
+                  }
+                }
+                
+                // Fallback to original point data if not found in routes
+                if (!stopAddress && originalPoint?.address && originalPoint.address !== `${location.lat}, ${location.lon}`) {
+                  stopAddress = originalPoint.address;
+                }
+                
+                const stopType = stop.type || (stopIndex === 0 ? "Inicio" : stopIndex === vehicleRoute.length - 1 ? "Fin" : "Parada");
+                const stopName = `${routeName} - ${stopIndex + 1}`;
+                let stopDescription = `Tipo: ${stopType}\nOrden en ruta: ${stopIndex + 1}\nRuta: ${routeName}`;
+                
+                // Add address if available
+                if (stopAddress) {
+                  stopDescription += `\nDirección: ${stopAddress}`;
+                }
+                
+                // Add passenger names if available
+                if (passengerNames.length > 0) {
+                  stopDescription += `\nPasajeros:\n${passengerNames.map(name => `  • ${name}`).join('\n')}`;
+                } else {
+                  // Fallback to person_id if no passenger names
+                  let personIds = "";
+                  if (originalPoint?.person_id) {
+                    personIds = originalPoint.person_id;
+                  } else {
+                    const personIdFromStopId = extractPersonIdFromStopId(stop.id || '');
+                    if (personIdFromStopId) {
+                      personIds = personIdFromStopId;
+                    } else {
+                      const personIdFromMap = pointIdToPersonMapForKML.get(originalPointId);
+                      if (personIdFromMap) {
+                        personIds = personIdFromMap;
+                      }
+                    }
+                  }
+                  if (personIds) {
+                    stopDescription += `\nID Persona(s): ${personIds}`;
+                  }
+                }
+                
+                // Use different icons for start/end/stops
+                let iconUrl = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png";
+                if (stopIndex === 0) {
+                  iconUrl = "http://maps.google.com/mapfiles/kml/shapes/arrow.png"; // Start
+                } else if (stopIndex === vehicleRoute.length - 1) {
+                  iconUrl = "http://maps.google.com/mapfiles/kml/shapes/placemark_square.png"; // End
+                }
+
+                kml += `      <Placemark>
+        <name>${stopName}</name>
+        <description><![CDATA[${stopDescription}]]></description>
+        <styleUrl>#${styleId}</styleUrl>
+        <Point>
+          <coordinates>${location.lon},${location.lat},0</coordinates>
+        </Point>
+        <Style>
+          <IconStyle>
+            <Icon>
+              <href>${iconUrl}</href>
+            </Icon>
+            <scale>1.2</scale>
+          </IconStyle>
+          <LabelStyle>
+            <scale>0.8</scale>
+          </LabelStyle>
+        </Style>
+      </Placemark>
+`;
+              } else {
+                console.warn(`Stop ${stopIndex} for vehicle ${vehicle.id || vehicleIndex} has no valid location:`, location);
+              }
+            });
+          } else {
+            console.warn(`No route stops found for vehicle ${vehicle.id || vehicleIndex}`);
+          }
+
+          kml += `    </Folder>
+`;
+          globalRouteIndex++;
+        });
+      });
+
+      // Close KML
+      kml += `  </Document>
+</kml>`;
+
+      // Create blob and download
+      console.log("Creating KML blob. KML length:", kml.length);
+      const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+      console.log("Blob created. Size:", blob.size, "bytes");
+      
+      if (blob.size === 0) {
+        throw new Error("El archivo KML generado está vacío");
+      }
+      
+      const url = URL.createObjectURL(blob);
+      console.log("Object URL created:", url);
+      
+      const timestamp = new Date().toISOString().split('T')[0];
+      const filename = `optimizacion_${runId}_${timestamp}.kml`;
+      
+      try {
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        console.log("Link created and appended. Triggering click...");
+        link.click();
+        
+        // Small delay before cleanup to ensure download starts
+        setTimeout(() => {
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+          console.log("Link removed and URL revoked");
+        }, 100);
+
+        toast({
+          title: "Exportación exitosa",
+          description: `Archivo KML ${filename} descargado correctamente`,
+        });
+      } catch (downloadError) {
+        console.error("Error during download:", downloadError);
+        URL.revokeObjectURL(url);
+        throw new Error(`Error al descargar el archivo: ${downloadError instanceof Error ? downloadError.message : String(downloadError)}`);
+      }
+    } catch (error) {
+      console.error("Error exporting to KML:", error);
+      console.error("Error details:", {
+        error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        selectedRunData: !!selectedRunData,
+        routesCount: routes.length,
+      });
+      toast({
+        title: "Error",
+        description: `Error al exportar KML: ${error instanceof Error ? error.message : String(error)}`,
+        variant: "destructive",
+      });
+    }
   };
 
   return (

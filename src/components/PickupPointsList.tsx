@@ -23,6 +23,8 @@ interface PickupPoint {
   quantity?: number;
   person_id?: string;
   grupo?: string;
+  group?: string; // Group identifier (local only)
+  group_color?: string; // Group color (local only)
   all_nombres?: string[]; // All passenger names when quantity >= 2
 }
 
@@ -71,9 +73,20 @@ const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPoin
               onClick={() => onPointClick?.(point)}
             >
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-semibold text-sm truncate">{point.name}</p>
-                  {point.grupo && (
+                  {point.group && (
+                    <span
+                      className="px-2 py-0.5 text-xs font-semibold rounded-md border flex-shrink-0 text-white"
+                      style={{
+                        backgroundColor: point.group_color || "#8b5cf6",
+                        borderColor: point.group_color || "#8b5cf6",
+                      }}
+                    >
+                      {point.group}
+                    </span>
+                  )}
+                  {point.grupo && !point.group && (
                     <span className="px-2 py-0.5 text-xs font-semibold text-purple-700 bg-purple-100 rounded-md border border-purple-300 flex-shrink-0">
                       {point.grupo}
                     </span>

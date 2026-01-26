@@ -8,7 +8,8 @@ import PickupPointForm from "@/components/PickupPointForm";
 import VehicleConfig from "@/components/VehicleConfig";
 import PickupPointsList from "@/components/PickupPointsList";
 import Layout from "@/components/Layout";
-import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Settings, Menu, ZoomIn } from "lucide-react";
+import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Settings, Menu, ZoomIn, Layers } from "lucide-react";
+import * as turf from "@turf/turf";
 import * as XLSX from "xlsx";
 import { Loader2 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -44,6 +45,8 @@ interface PickupPoint {
   quantity?: number;
   person_id?: string;
   grupo?: string;
+  group?: string; // Group identifier (local only)
+  group_color?: string; // Group color (local only)
   all_nombres?: string[]; // All passenger names when quantity >= 2
 }
 
@@ -96,7 +99,24 @@ const Index = () => {
   const [selectedRouteIndex, setSelectedRouteIndex] = useState<number | null>(null);
   const [focusLocation, setFocusLocation] = useState<{ lon: number; lat: number } | null>(null);
   const [zoomToRoute, setZoomToRoute] = useState<number | null>(null);
+  const [polygonMode, setPolygonMode] = useState(false);
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [selectedPointsForGroup, setSelectedPointsForGroup] = useState<PickupPoint[]>([]);
+  const [groupName, setGroupName] = useState("");
+  const [selectedColor, setSelectedColor] = useState<string>("#3b82f6");
   const { toast } = useToast();
+  
+  // Available colors for groups
+  const groupColorOptions = [
+    { name: "Azul", value: "#3b82f6" },
+    { name: "Verde", value: "#26bc30" },
+    { name: "Rojo", value: "#ef4444" },
+    { name: "Amarillo", value: "#f59e0b" },
+    { name: "Morado", value: "#8b5cf6" },
+    { name: "Rosa", value: "#ec4899" },
+    { name: "Cian", value: "#06b6d4" },
+    { name: "Lima", value: "#84cc16" },
+  ];
 
   // Calculate total passengers from pickup points
   // Use quantity if available (sum of all quantities), otherwise count unique person_ids
@@ -297,7 +317,7 @@ const Index = () => {
         const routeTime = route.time ? Number(route.time) : 0;
         
         // Build route_data structure similar to Nextmv format
-        const routeData = {
+          const routeData = {
           id: route.fk_vehicle?.nextmv_id || route.nextmv_id,
           route: stopsWithPassengers.map((s: any) => ({ stop: s.stop })),
           route_travel_distance: routeDistance,
@@ -365,7 +385,15 @@ const Index = () => {
   };
 
   const handleExportToKML = async () => {
-    if (!selectedRunData) {
+    console.log("handleExportToKML called", {
+      hasSelectedRunData: !!selectedRunData,
+      routesCount: routes.length,
+      selectedRunId
+    });
+    
+    // Check if we have routes loaded (either from selectedRunData or from Supabase)
+    if (!selectedRunData && routes.length === 0) {
+      console.error("No data available for export");
       toast({
         title: "Error",
         description: "No hay datos de optimización para exportar",
@@ -374,13 +402,132 @@ const Index = () => {
       return;
     }
 
+    // Prioritize routes loaded from Supabase (more reliable for previously loaded optimizations)
+    let solutions: any[] = [];
+    
     try {
-      const solutions = selectedRunData.output?.solutions || selectedRunData.solutions || [];
       
-      if (solutions.length === 0) {
+      if (routes.length > 0) {
+        // Build solutions structure from routes (works for both newly run and loaded optimizations)
+        // Routes from Supabase have route_data.route which contains stops with stop.location
+        console.log("Building solutions from routes. Routes count:", routes.length);
+        console.log("Sample route structure:", routes[0]);
+        
+        try {
+          solutions = [{
+            vehicles: routes.map((route: any, routeIndex: number) => {
+              try {
+                // Parse route_data if it's a string (JSONB from Supabase)
+                let routeData = route.route_data;
+                if (typeof routeData === 'string') {
+                  try {
+                    routeData = JSON.parse(routeData);
+                  } catch (e) {
+                    console.warn(`Failed to parse route_data as JSON for route ${routeIndex}:`, e);
+                    routeData = null;
+                  }
+                }
+                
+                // Get route stops from route_data.route
+                // The route_data.route already has stops in format { stop: { id, location } }
+                let routeStops = routeData?.route || [];
+                
+                // If route_data.route is empty, try to build from stops array
+                if (routeStops.length === 0 && route.stops && Array.isArray(route.stops)) {
+                  console.log(`Route ${routeIndex} has no route_data.route, building from stops array`);
+                  routeStops = route.stops.map((stop: any) => {
+                    // Try to get location from fk_pickup_point first
+                    let location = null;
+                    if (stop.fk_pickup_point) {
+                      const lat = stop.fk_pickup_point.latitude;
+                      const lon = stop.fk_pickup_point.longitude;
+                      if (lat != null && lon != null) {
+                        location = {
+                          lat: Number(lat),
+                          lon: Number(lon)
+                        };
+                      }
+                    }
+                    
+                    // Fallback to stop's own location fields if available
+                    if (!location && stop.latitude != null && stop.longitude != null) {
+                      location = {
+                        lat: Number(stop.latitude),
+                        lon: Number(stop.longitude)
+                      };
+                    }
+                    
+                    return {
+                      stop: {
+                        id: stop.nextmv_id || stop.id,
+                        location: location
+                      }
+                    };
+                  });
+                }
+                
+                console.log(`Route ${routeIndex}:`, {
+                  routeId: route.id,
+                  routeDataId: routeData?.id,
+                  routeStopsCount: routeStops.length,
+                  firstStop: routeStops[0],
+                  hasRouteData: !!routeData,
+                  hasStops: !!route.stops
+                });
+                
+                // Validate and filter stops with valid locations
+                const validStops = routeStops.filter((routeStop: any) => {
+                  const location = routeStop.stop?.location;
+                  const isValid = location && location.lat != null && location.lon != null;
+                  if (!isValid) {
+                    console.warn(`Invalid stop in route ${routeIndex}:`, routeStop);
+                  }
+                  return isValid;
+                });
+                
+                if (validStops.length === 0) {
+                  console.warn(`Route ${route.id} has no valid stops with locations`);
+                }
+                
+                return {
+                  id: routeData?.id || route.vehicle_id || `vehicle-${routeIndex}`,
+                  route: validStops, // Filter out stops without valid locations
+                  _routeIndex: routeIndex, // Store original route index for matching
+                  _route: route // Store route reference for accessing fk_vehicle
+                };
+              } catch (error) {
+                console.error(`Error processing route ${routeIndex}:`, error);
+                // Return empty route to avoid breaking the entire export
+                return {
+                  id: route.vehicle_id || `vehicle-${routeIndex}`,
+                  route: [],
+                  _routeIndex: routeIndex,
+                  _route: route
+                };
+              }
+            }).filter((vehicle: any) => vehicle.route.length > 0) // Only include vehicles with valid stops
+          }];
+          console.log("Built solutions from routes:", solutions);
+          console.log("Total vehicles in solutions:", solutions[0]?.vehicles?.length || 0);
+        } catch (error) {
+          console.error("Error building solutions from routes:", error);
+          throw error; // Re-throw to be caught by outer catch
+        }
+      } else if (selectedRunData) {
+        // Fallback to selectedRunData if routes are not available
+        solutions = selectedRunData.output?.solutions || selectedRunData.solutions || [];
+      }
+      
+      if (solutions.length === 0 || (solutions[0]?.vehicles?.length || 0) === 0) {
+        console.error("No solutions available for export:", {
+          solutionsLength: solutions.length,
+          vehiclesCount: solutions[0]?.vehicles?.length || 0,
+          routesCount: routes.length,
+          hasSelectedRunData: !!selectedRunData
+        });
         toast({
           title: "Error",
-          description: "No hay soluciones disponibles para exportar",
+          description: "No hay soluciones disponibles para exportar. Verifique que las rutas tengan paradas válidas.",
           variant: "destructive",
         });
         return;
@@ -585,11 +732,39 @@ const Index = () => {
         const solutionVehicles = solution.vehicles || [];
         
         solutionVehicles.forEach((vehicle: any, vehicleIndex: number) => {
-          // Find the vehicle in the vehicles array to get the plate (name)
-          const vehicleInfo = vehicles.find(v => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-          const vehiclePlate = vehicleInfo?.name || vehicle.id || `Vehículo ${vehicleIndex + 1}`;
+          // Get route name - prioritize route.name (e.g., "Route for AAA120") as shown in web interface
+          let routeName = `Vehículo ${vehicleIndex + 1}`;
           
-          const route = vehicle.route || [];
+          // First priority: get route name from stored route reference (matches web interface)
+          if (vehicle._route?.name) {
+            routeName = vehicle._route.name;
+          } else if (routes.length > 0 && vehicle._routeIndex !== undefined && routes[vehicle._routeIndex]) {
+            // Fallback: use stored route index to get route
+            const route = routes[vehicle._routeIndex];
+            if (route.name) {
+              routeName = route.name;
+            } else if (route.fk_vehicle?.name) {
+              // If no route.name, construct it like the web interface: "Route for {plate}"
+              routeName = `Route for ${route.fk_vehicle.name}`;
+            } else if (route.vehicle_id) {
+              const vehicleInfo = vehicles.find(v => v.id === route.vehicle_id);
+              if (vehicleInfo?.name) {
+                routeName = `Route for ${vehicleInfo.name}`;
+              }
+            }
+          }
+          
+          // If still not found, try matching with vehicles array by vehicle.id
+          if (routeName === `Vehículo ${vehicleIndex + 1}`) {
+          const vehicleInfo = vehicles.find(v => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+            if (vehicleInfo?.name) {
+              routeName = `Route for ${vehicleInfo.name}`;
+            } else if (vehicle.id && vehicle.id !== `vehicle-${vehicleIndex}`) {
+              routeName = `Route for ${vehicle.id}`;
+            }
+          }
+          
+          const vehicleRoute = vehicle.route || [];
           const routeInfo = routeData.find(r => r.solutionIndex === solutionIndex && r.vehicleIndex === vehicleIndex);
           const styleId = `route-${solutionIndex}-${vehicleIndex}`;
           
@@ -601,10 +776,10 @@ const Index = () => {
             geometryType: routeInfo?.geometry?.type
           });
           
-          // Create folder for this vehicle route with plate
+          // Create folder for this vehicle route with route name
           kml += `    <Folder>
-      <name>${vehiclePlate} - Solución ${solutionIndex + 1}</name>
-      <description>Ruta del vehículo ${vehiclePlate} (ID: ${vehicle.id || vehicleIndex + 1})</description>
+      <name>${routeName} - Solución ${solutionIndex + 1}</name>
+      <description>${routeName} (ID: ${vehicle.id || vehicleIndex + 1})</description>
 `;
 
           // Create route path (LineString) using Mapbox geometry
@@ -625,8 +800,8 @@ const Index = () => {
               .join(' ');
 
             kml += `      <Placemark>
-        <name>Ruta ${vehiclePlate}</name>
-        <description>Ruta completa del vehículo ${vehiclePlate} (generada por Mapbox - ${geoJsonCoords.length} puntos)</description>
+        <name>${routeName}</name>
+        <description>${routeName} (generada por Mapbox - ${geoJsonCoords.length} puntos)</description>
         <styleUrl>#${styleId}</styleUrl>
         <LineString>
           <tessellate>1</tessellate>
@@ -636,10 +811,10 @@ const Index = () => {
 `;
           } else {
             console.warn(`No Mapbox geometry for vehicle ${vehicle.id || vehicleIndex}, routeInfo:`, routeInfo);
-            if (route.length > 0) {
+            if (vehicleRoute.length > 0) {
               // Fallback: use stop coordinates if Mapbox route not available
               const coordinates: string[] = [];
-              route.forEach((routeStop: any) => {
+              vehicleRoute.forEach((routeStop: any) => {
                 const location = routeStop.stop?.location;
                 if (location && location.lat && location.lon) {
                   coordinates.push(`${location.lon},${location.lat},0`);
@@ -648,8 +823,8 @@ const Index = () => {
 
               if (coordinates.length > 0) {
                 kml += `      <Placemark>
-        <name>Ruta ${vehiclePlate}</name>
-        <description>Ruta completa del vehículo ${vehiclePlate} (línea recta - Mapbox no disponible)</description>
+        <name>${routeName}</name>
+        <description>${routeName} (línea recta - Mapbox no disponible)</description>
         <styleUrl>#${styleId}</styleUrl>
         <LineString>
           <tessellate>1</tessellate>
@@ -662,49 +837,94 @@ const Index = () => {
           }
 
           // Create placemarks for each stop (always create these, regardless of route type)
-          if (route && route.length > 0) {
-            console.log(`Creating ${route.length} stop placemarks for vehicle ${vehicle.id || vehicleIndex}`);
-            route.forEach((routeStop: any, stopIndex: number) => {
+          if (vehicleRoute && vehicleRoute.length > 0) {
+            console.log(`Creating ${vehicleRoute.length} stop placemarks for vehicle ${vehicle.id || vehicleIndex}`);
+            vehicleRoute.forEach((routeStop: any, stopIndex: number) => {
               const stop = routeStop.stop || {};
               const location = stop.location;
               
               if (location && location.lat && location.lon) {
-                // Extract all person_ids from the original point (not just the one in stop ID)
-                // Stop ID only contains the first person_id, but the original point may have multiple (comma-separated)
-                let personIds = "";
                 const originalPointId = extractOriginalPointId(stop.id || '');
                 const originalPoint = pickupPoints.find(p => p.id === originalPointId);
                 
+                // Try to get passenger names and address from loaded routes
+                let passengerNames: string[] = [];
+                let stopAddress: string | null = null;
+                
+                // Check if we have routes with stops data (from loaded optimizations)
+                if (routes.length > 0) {
+                  for (const loadedRoute of routes) {
+                    const routeStops = loadedRoute.stops || [];
+                    for (const loadedStop of routeStops) {
+                      const loadedStopId = loadedStop.nextmv_id || loadedStop.id;
+                      const loadedOriginalPointId = extractOriginalPointId(loadedStopId);
+                      
+                      if (loadedOriginalPointId === originalPointId || loadedStopId === stop.id) {
+                        // Get address from pickup_point
+                        if (loadedStop.fk_pickup_point) {
+                          stopAddress = loadedStop.fk_pickup_point.address || null;
+                        }
+                        
+                        // Get passenger names
+                        if (loadedStop.passengers && Array.isArray(loadedStop.passengers)) {
+                          const names = loadedStop.passengers
+                            .map((sp: any) => {
+                              const passenger = sp.fk_passenger || sp;
+                              return passenger?.name || null;
+                            })
+                            .filter((name: string | null) => name !== null);
+                          passengerNames = [...new Set([...passengerNames, ...names])]; // Remove duplicates
+                        }
+                        break;
+                      }
+                    }
+                    if (stopAddress || passengerNames.length > 0) break;
+                  }
+                }
+                
+                // Fallback to original point data if not found in routes
+                if (!stopAddress && originalPoint?.address && originalPoint.address !== `${location.lat}, ${location.lon}`) {
+                  stopAddress = originalPoint.address;
+                }
+                
+                const stopType = stop.type || (stopIndex === 0 ? "Inicio" : stopIndex === vehicleRoute.length - 1 ? "Fin" : "Parada");
+                const stopName = `${routeName} - ${stopIndex + 1}`;
+                let stopDescription = `Tipo: ${stopType}\nOrden en ruta: ${stopIndex + 1}\nRuta: ${routeName}`;
+                
+                // Add address if available
+                if (stopAddress) {
+                  stopDescription += `\nDirección: ${stopAddress}`;
+                }
+                
+                // Add passenger names if available
+                if (passengerNames.length > 0) {
+                  stopDescription += `\nPasajeros:\n${passengerNames.map(name => `  • ${name}`).join('\n')}`;
+                } else {
+                  // Fallback to person_id if no passenger names
+                  let personIds = "";
                 if (originalPoint?.person_id) {
-                  // Use all person_ids from the original point (may be comma-separated)
                   personIds = originalPoint.person_id;
                 } else {
-                  // Fallback: try to extract from stop ID (only the first one)
                   const personIdFromStopId = extractPersonIdFromStopId(stop.id || '');
                   if (personIdFromStopId) {
                     personIds = personIdFromStopId;
                   } else {
-                    // Final fallback: check the map
                     const personIdFromMap = pointIdToPersonMapForKML.get(originalPointId);
                     if (personIdFromMap) {
                       personIds = personIdFromMap;
                     }
                   }
                 }
-                
-                const stopType = stop.type || (stopIndex === 0 ? "Inicio" : stopIndex === route.length - 1 ? "Fin" : "Parada");
-                const stopName = `${vehiclePlate} - ${stopIndex + 1}`;
-                let stopDescription = `Tipo: ${stopType}\nOrden en ruta: ${stopIndex + 1}\nVehículo: ${vehiclePlate}`;
                 if (personIds) {
-                  // Show all person IDs (comma-separated if multiple)
                   stopDescription += `\nID Persona(s): ${personIds}`;
+                  }
                 }
                 
                 // Use different icons for start/end/stops
                 let iconUrl = "http://maps.google.com/mapfiles/kml/shapes/placemark_circle.png";
                 if (stopIndex === 0) {
                   iconUrl = "http://maps.google.com/mapfiles/kml/shapes/arrow.png"; // Start
-                } else if (stopIndex === route.length - 1) {
+                } else if (stopIndex === vehicleRoute.length - 1) {
                   iconUrl = "http://maps.google.com/mapfiles/kml/shapes/placemark_square.png"; // End
                 }
 
@@ -747,25 +967,55 @@ const Index = () => {
 </kml>`;
 
       // Create blob and download
+      console.log("Creating KML blob. KML length:", kml.length);
       const blob = new Blob([kml], { type: 'application/vnd.google-earth.kml+xml' });
+      console.log("Blob created. Size:", blob.size, "bytes");
+      
+      if (blob.size === 0) {
+        throw new Error("El archivo KML generado está vacío");
+      }
+      
       const url = URL.createObjectURL(blob);
+      console.log("Object URL created:", url);
+      
       const timestamp = new Date().toISOString().split('T')[0];
       const filename = `optimizacion_${selectedRunId || timestamp}_${timestamp}.kml`;
       
+      try {
       const link = document.createElement('a');
       link.href = url;
       link.download = filename;
+        link.style.display = 'none';
       document.body.appendChild(link);
+        console.log("Link created and appended. Triggering click...");
       link.click();
+        
+        // Small delay before cleanup to ensure download starts
+        setTimeout(() => {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+          console.log("Link removed and URL revoked");
+        }, 100);
 
       toast({
         title: "Exportación exitosa",
         description: `Archivo KML ${filename} descargado correctamente`,
       });
+      } catch (downloadError) {
+        console.error("Error during download:", downloadError);
+        URL.revokeObjectURL(url);
+        throw new Error(`Error al descargar el archivo: ${downloadError instanceof Error ? downloadError.message : String(downloadError)}`);
+      }
     } catch (error) {
       console.error("Error exporting to KML:", error);
+      console.error("Error details:", {
+        error,
+        message: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+        selectedRunData: !!selectedRunData,
+        routesCount: routes.length,
+        solutionsCount: solutions?.length || 0
+      });
       toast({
         title: "Error",
         description: error instanceof Error ? error.message : "No se pudo exportar el archivo KML",
@@ -780,13 +1030,13 @@ const Index = () => {
     console.log("Routes data:", routes);
     
     if (routes.length === 0) {
-      toast({
-        title: "Error",
+        toast({
+          title: "Error",
         description: "No hay rutas disponibles para exportar",
-        variant: "destructive",
-      });
-      return;
-    }
+          variant: "destructive",
+        });
+        return;
+      }
 
     try {
       // Create a new workbook
@@ -833,8 +1083,8 @@ const Index = () => {
           
           // Fallback to pickupPoints if not found in Supabase
           if (!address) {
-            const extractOriginalPointId = (stopId: string): string => {
-              if (!stopId) return stopId;
+      const extractOriginalPointId = (stopId: string): string => {
+        if (!stopId) return stopId;
               const idx = stopId.indexOf('__person_');
               return idx > -1 ? stopId.substring(0, idx) : stopId;
             };
@@ -911,8 +1161,8 @@ const Index = () => {
                   address,
                   lat,
                   lon,
-                ]);
-              });
+            ]);
+          });
             } else {
               // If stop has no passengers, still add one row with empty name
               routeData.push([
@@ -1096,6 +1346,97 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
       localStorage.setItem('pickup_points', JSON.stringify(points));
     } catch (error) {
       console.error("Error saving to localStorage:", error);
+    }
+  };
+
+  // Handle polygon completion for group assignment
+  const handlePolygonComplete = (polygon: number[][]) => {
+    if (polygon.length < 3) {
+      toast({
+        title: "Error",
+        description: "El polígono debe tener al menos 3 puntos",
+        variant: "destructive",
+      });
+      setPolygonMode(false);
+      return;
+    }
+
+    // Close the polygon by adding the first point at the end
+    const closedPolygon = [...polygon, polygon[0]];
+    
+    // Create a turf polygon
+    const turfPolygon = turf.polygon([closedPolygon]);
+    
+    // Find all pickup points inside the polygon
+    const pointsInside: PickupPoint[] = [];
+    pickupPoints.forEach((point) => {
+      const pointFeature = turf.point([point.longitude, point.latitude]);
+      if (turf.booleanPointInPolygon(pointFeature, turfPolygon)) {
+        pointsInside.push(point);
+      }
+    });
+
+    if (pointsInside.length === 0) {
+      toast({
+        title: "Sin puntos seleccionados",
+        description: "No hay puntos de recogida dentro del polígono",
+        variant: "destructive",
+      });
+      setPolygonMode(false);
+      return;
+    }
+
+    // Store selected points and open dialog (don't update Supabase yet)
+    setSelectedPointsForGroup(pointsInside);
+    setGroupDialogOpen(true);
+    setPolygonMode(false);
+  };
+
+  // Handle group assignment (local only, no Supabase updates)
+  const handleAssignGroup = () => {
+    if (!groupName.trim()) {
+      toast({
+        title: "Error",
+        description: "Por favor ingresa un nombre de grupo",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const trimmedGroupName = groupName.trim();
+      
+      // Update pickup points locally with group and group_color
+      const updatedPoints = pickupPoints.map((point) => {
+        if (selectedPointsForGroup.some((p) => p.id === point.id)) {
+          return {
+            ...point,
+            group: trimmedGroupName,
+            group_color: selectedColor,
+          };
+        }
+        return point;
+      });
+
+      setPickupPoints(updatedPoints);
+      savePointsToLocalStorage(updatedPoints);
+
+      toast({
+        title: "Grupo asignado",
+        description: `Se asignó el grupo "${trimmedGroupName}" a ${selectedPointsForGroup.length} punto(s) de recogida`,
+      });
+
+      setGroupDialogOpen(false);
+      setGroupName("");
+      setSelectedColor("#3b82f6");
+      setSelectedPointsForGroup([]);
+    } catch (error) {
+      console.error("Error assigning group:", error);
+      toast({
+        title: "Error",
+        description: "No se pudo asignar el grupo",
+        variant: "destructive",
+      });
     }
   };
 
@@ -3420,27 +3761,27 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
           if (!routesData || routesData.length === 0) {
             console.warn("No routes found in database, using solution data as fallback");
             // Fallback to solution data if database doesn't have routes yet
-            const seenVehicles = new Set<string | null>();
-            const routesFromSolution = (solution.vehicles || [])
-              .filter((vehicle: any, index: number) => {
-                const vehicleId = vehicle.id || `vehicle-${index}`;
+      const seenVehicles = new Set<string | null>();
+      const routesFromSolution = (solution.vehicles || [])
+        .filter((vehicle: any, index: number) => {
+          const vehicleId = vehicle.id || `vehicle-${index}`;
                 if (seenVehicles.has(vehicleId)) return false;
-                seenVehicles.add(vehicleId);
-                return true;
-              })
-              .map((vehicle: any, filteredIndex: number) => {
-                const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
-                return {
-                  id: `temp-${filteredIndex}-${Date.now()}`,
-                  vehicle_id: originalVehicle?.id || null,
-                  route_data: vehicle,
-                  total_distance: vehicle.route_travel_distance || 0,
-                  total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
-                  created_at: new Date().toISOString()
-                };
-              });
-            setRoutes(routesFromSolution);
-            setVisibleRoutes(new Set(routesFromSolution.map((_, index) => index)));
+          seenVehicles.add(vehicleId);
+          return true;
+        })
+        .map((vehicle: any, filteredIndex: number) => {
+          const originalVehicle = vehicles.find((v) => v.id === vehicle.id || `vehicle-${vehicles.indexOf(v)}` === vehicle.id);
+          return {
+            id: `temp-${filteredIndex}-${Date.now()}`,
+            vehicle_id: originalVehicle?.id || null,
+            route_data: vehicle,
+            total_distance: vehicle.route_travel_distance || 0,
+            total_duration: vehicle.route_travel_duration || vehicle.route_duration || 0,
+            created_at: new Date().toISOString()
+          };
+        });
+      setRoutes(routesFromSolution);
+      setVisibleRoutes(new Set(routesFromSolution.map((_, index) => index)));
           } else {
             // Transform Supabase data to match expected format
             const transformedRoutes = routesData.map((route: any) => {
@@ -3625,7 +3966,29 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                 {vehicles.length === 0 && "Necesitas configurar al menos 1 vehículo."}
               </p>
             )}
-            <div className="flex justify-end">
+            <div className="flex justify-end gap-2">
+              <Button
+                onClick={() => {
+                  setPolygonMode(!polygonMode);
+                  if (polygonMode) {
+                    toast({
+                      title: "Modo polígono desactivado",
+                      description: "Haz clic en el mapa para dibujar un polígono alrededor de los puntos",
+                    });
+                  } else {
+                    toast({
+                      title: "Modo polígono activado",
+                      description: "Haz clic en el mapa para dibujar un polígono. Haz clic cerca del primer punto para completar.",
+                    });
+                  }
+                }}
+                variant={polygonMode ? "default" : "outline"}
+                className={polygonMode ? "bg-blue-600 hover:bg-blue-700" : ""}
+                size="default"
+              >
+                <Layers className="w-4 h-4 mr-2" />
+                Agrupar con polígono
+              </Button>
               <Button
                 onClick={handleOptimizeRoutes}
                 disabled={isOptimizing || pickupPoints.length < 2 || vehicles.length === 0}
@@ -3924,9 +4287,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
             });
             
             const vehicle = getVehicleFromRoute(routeIndex, route);
-            if (vehicle) {
+              if (vehicle) {
               console.log(`[getVehicleName] Matched vehicle: ${vehicle.name}`);
-              return vehicle.name;
+                return vehicle.name;
             }
             
             // Third, try to get vehicle name from route_data if it exists
@@ -4102,10 +4465,10 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                         Descargar Excel
                       </Button>
                       <Button
-                        onClick={handleExportToKML}
                         variant="outline"
                         size="sm"
                         className="w-full"
+                        disabled
                       >
                         <Download className="w-4 h-4 mr-2" />
                         Descargar KML
@@ -4306,8 +4669,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                   pointName = dbStop.fk_pickup_point.address;
                                 } else if (point?.address) {
                                   pointName = point.address;
-                                } else {
-                                  pointName = point?.name || `Punto ${stopCounter}`;
+                            } else {
+                              pointName = point?.name || `Punto ${stopCounter}`;
                                 }
                               } else if (point?.address) {
                                 pointName = point.address;
@@ -4511,19 +4874,19 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                                         </div>
                                       ) : stop.personIds && stop.personIds.length > 0 ? (
                                         <div>
-                                          <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
-                                          <div className="flex flex-wrap gap-1">
-                                            {stop.personIds.map((personId, pIdx) => (
-                                              <span
-                                                key={pIdx}
-                                                className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
-                                              >
-                                                {personId}
-                                              </span>
-                                            ))}
-                                          </div>
-                                        </div>
-                                      ) : (
+                                      <p className="text-xs text-muted-foreground mb-1">Pasajeros:</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {stop.personIds.map((personId, pIdx) => (
+                                          <span
+                                            key={pIdx}
+                                            className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded"
+                                          >
+                                            {personId}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  ) : (
                                         <p className="text-xs text-muted-foreground italic">Sin pasajeros asignados</p>
                                       )}
                                     </div>
@@ -4574,6 +4937,8 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                   selectedRouteIndex={selectedRouteIndex}
                   focusLocation={focusLocation}
                   zoomToRoute={zoomToRoute}
+                  polygonMode={polygonMode}
+                  onPolygonComplete={handlePolygonComplete}
                 />
               </CardContent>
             </Card>
@@ -4644,6 +5009,67 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
               </Button>
               <Button onClick={() => setPreviewJsonDialogOpen(false)}>
                 Cerrar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Group Assignment Dialog */}
+      <Dialog open={groupDialogOpen} onOpenChange={setGroupDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Asignar Grupo</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="group-name">Nombre del Grupo</Label>
+              <Input
+                id="group-name"
+                value={groupName}
+                onChange={(e) => setGroupName(e.target.value)}
+                placeholder="Ej: Grupo A, Zona Norte, etc."
+                className="mt-2"
+              />
+            </div>
+            <div>
+              <Label>Color del Grupo</Label>
+              <div className="mt-2 grid grid-cols-4 gap-2">
+                {groupColorOptions.map((color) => (
+                  <button
+                    key={color.value}
+                    type="button"
+                    onClick={() => setSelectedColor(color.value)}
+                    className={`h-10 w-full rounded-md border-2 transition-all ${
+                      selectedColor === color.value
+                        ? "border-primary ring-2 ring-primary ring-offset-2"
+                        : "border-gray-300 hover:border-gray-400"
+                    }`}
+                    style={{ backgroundColor: color.value }}
+                    title={color.name}
+                  />
+                ))}
+              </div>
+            </div>
+            <div>
+              <p className="text-sm text-muted-foreground">
+                Se asignará el grupo a los pasajeros de {selectedPointsForGroup.length} punto(s) de recogida.
+              </p>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setGroupDialogOpen(false);
+                  setGroupName("");
+                  setSelectedColor("#3b82f6");
+                  setSelectedPointsForGroup([]);
+                }}
+              >
+                Cancelar
+              </Button>
+              <Button onClick={handleAssignGroup} disabled={!groupName.trim()}>
+                Asignar Grupo
               </Button>
             </div>
           </div>
