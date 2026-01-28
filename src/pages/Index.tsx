@@ -104,6 +104,7 @@ const Index = () => {
   const [selectedPointsForGroup, setSelectedPointsForGroup] = useState<PickupPoint[]>([]);
   const [groupName, setGroupName] = useState("");
   const [selectedColor, setSelectedColor] = useState<string>("#3b82f6");
+  const [activePickupGroup, setActivePickupGroup] = useState<string | "ALL">("ALL");
   const { toast } = useToast();
   
   // Available colors for groups
@@ -1438,6 +1439,21 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
         variant: "destructive",
       });
     }
+  };
+
+  const handleClearAllGroups = () => {
+    const updatedPoints = pickupPoints.map((point) => ({
+      ...point,
+      group: undefined,
+      group_color: undefined,
+    }));
+    setPickupPoints(updatedPoints);
+    savePointsToLocalStorage(updatedPoints);
+    setActivePickupGroup("ALL");
+    toast({
+      title: "Grupos quitados",
+      description: "Se quitaron todos los grupos de los puntos de recogida. Los puntos se mantienen.",
+    });
   };
 
   const handleAddPickupPoint = async (point: Omit<PickupPoint, "id"> & { id?: string }) => {
@@ -4126,6 +4142,9 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                             onRemove={handleRemovePickupPoint}
                             onPointClick={(point) => setFocusedPoint(point)}
                             onEdit={handleEditPickupPoint}
+                            activeGroupFilter={activePickupGroup}
+                            onGroupFilterChange={setActivePickupGroup}
+                            onClearAllGroups={handleClearAllGroups}
                           />
                         </CardContent>
                       </Card>
@@ -4939,6 +4958,7 @@ ADD COLUMN IF NOT EXISTS quantity INTEGER DEFAULT 1;
                   zoomToRoute={zoomToRoute}
                   polygonMode={polygonMode}
                   onPolygonComplete={handlePolygonComplete}
+                  activePickupGroup={activePickupGroup}
                 />
               </CardContent>
             </Card>

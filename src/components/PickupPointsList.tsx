@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MapPin, Trash2, Edit } from "lucide-react";
@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
 
 interface PickupPoint {
   id: string;
@@ -33,9 +34,145 @@ interface PickupPointsListProps {
   onRemove: (pointId: string) => void;
   onPointClick?: (point: PickupPoint) => void;
   onEdit?: (point: PickupPoint) => void;
+  activeGroupFilter?: string | "ALL";
+  onGroupFilterChange?: (value: string | "ALL") => void;
+  onClearAllGroups?: () => void;
 }
 
-const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPointsListProps) => {
+const PickupPointsList = ({
+  points,
+  onRemove,
+  onPointClick,
+  onEdit,
+  activeGroupFilter: controlledActiveGroupFilter,
+  onGroupFilterChange,
+  onClearAllGroups,
+}: PickupPointsListProps) => {
+  const [uncontrolledFilter, setUncontrolledFilter] = useState<string | "ALL">("ALL");
+  const activeGroupFilter = controlledActiveGroupFilter ?? uncontrolledFilter;
+
+  const setFilter = (value: string | "ALL") => {
+    if (onGroupFilterChange) {
+      onGroupFilterChange(value);
+    } else {
+      setUncontrolledFilter(value);
+    }
+  };
+
+  // Build list of unique groups (prefer local `group`, fall back to `grupo`)
+  const groupOptions = useMemo(() => {
+    const map = new Map<string, { color?: string; source: "group" | "grupo" }>();
+
+    points.forEach((point) => {
+      const label = point.group || point.grupo;
+      if (!label) return;
+
+      if (!map.has(label)) {
+        map.set(label, {
+          color: point.group ? point.group_color : undefined,
+          source: point.group ? "group" : "grupo",
+        });
+      }
+    });
+
+    return Array.from(map.entries()).map(([label, meta]) => ({
+      label,
+      color: meta.color,
+      source: meta.source,
+    }));
+  }, [points]);
+
+  // Text search for passengers by name or ID
+  const [searchQuery, setSearchQuery] = useState("");
+
+  const filteredPointsByGroup =
+    activeGroupFilter === "ALL"
+      ? points
+      : points.filter((point) => (point.group || point.grupo) === activeGroupFilter);
+
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+
+  const filteredPoints = normalizedSearch
+    ? filteredPointsByGroup.filter((point) => {
+        // Match by person_id (IDs)
+        const personIdMatch = point.person_id
+          ? point.person_id.toLowerCase().includes(normalizedSearch)
+          : false;
+
+        // Match by passenger names in all_nombres
+        const namesMatch = Array.isArray(point.all_nombres)
+          ? point.all_nombres.some((name) =>
+              name?.toLowerCase().includes(normalizedSearch)
+            )
+          : false;
+
+        // Also allow matching by point.name as a small convenience
+        const pointNameMatch = point.name
+          ? point.name.toLowerCase().includes(normalizedSearch)
+          : false;
+
+        return personIdMatch || namesMatch || pointNameMatch;
+      })
+    : filteredPointsByGroup;
+
+  const hasLocalGroups = points.some((p) => p.group);
+
+  const handleExportToExcel = () => {
+    // Build rows based on currently visible points (respecting group filter)
+    const sourcePoints = filteredPoints;
+
+    // Header row
+    const data: any[][] = [
+      [
+        "Persona ID",
+        "Nombre",
+        "Dirección",
+        "Latitud",
+        "Longitud",
+        "Grupo",
+        "Color grupo",
+      ],
+    ];
+
+    sourcePoints.forEach((point) => {
+      const personIds = point.person_id
+        ? point.person_id.split(",").map((id) => id.trim()).filter(Boolean)
+        : [""];
+
+      const names =
+        point.all_nombres && point.all_nombres.length > 0
+          ? point.all_nombres
+          : [""];
+
+      const maxLength = Math.max(personIds.length, names.length);
+
+      for (let i = 0; i < maxLength; i++) {
+        const personaId = personIds[i] ?? personIds[personIds.length - 1] ?? "";
+        const nombre = names[i] ?? names[names.length - 1] ?? "";
+
+        data.push([
+          personaId,
+          nombre,
+          point.address ?? "",
+          point.latitude,
+          point.longitude,
+          point.group || point.grupo || "",
+          point.group_color || "",
+        ]);
+      }
+    });
+
+    // Lazy-load XLSX only when needed to avoid adding it to the main bundle for this component
+    import("xlsx").then((XLSX) => {
+      const worksheet = XLSX.utils.aoa_to_sheet(data);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Puntos de recogida");
+
+      const date = new Date().toISOString().split("T")[0];
+      const filename = `puntos_recogida_${date}.xlsx`;
+      XLSX.writeFile(workbook, filename);
+    });
+  };
 
   if (points.length === 0) {
     return (
@@ -55,18 +192,130 @@ const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPoin
     );
   }
 
-
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <MapPin className="w-5 h-5" />
-          Puntos de Recogida ({points.length})
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <CardTitle className="flex items-center gap-2">
+            <MapPin className="w-5 h-5" />
+            Puntos de Recogida ({points.length})
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            {hasLocalGroups && onClearAllGroups && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                  >
+                    Quitar todos los grupos
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>¿Quitar todos los grupos?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Esta acción quitará todos los grupos y sus colores de los puntos de recogida,
+                      pero los puntos seguirán existiendo en el mapa y en la lista.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      onClick={onClearAllGroups}
+                    >
+                      Quitar grupos
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={handleExportToExcel}
+            >
+              Descargar Excel
+            </Button>
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex items-center">
+          <Input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Buscar pasajero por nombre o ID"
+            className="h-8 text-xs"
+          />
+        </div>
+
+        {groupOptions.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setFilter("ALL")}
+              className={`px-2 py-0.5 rounded-full border text-xs font-medium transition-colors ${
+                activeGroupFilter === "ALL"
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "bg-background text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              Todos
+            </button>
+            {groupOptions.map((group) => {
+              const isActive = activeGroupFilter === group.label;
+              const isLocalGroup = group.source === "group";
+              const baseClasses =
+                "px-2 py-0.5 rounded-full border text-xs font-semibold transition-colors cursor-pointer";
+
+              if (isLocalGroup && group.color) {
+                return (
+                  <button
+                    key={group.label}
+                    type="button"
+                    onClick={() =>
+                      setFilter(activeGroupFilter === group.label ? "ALL" : group.label)
+                    }
+                    className={baseClasses}
+                    style={{
+                      backgroundColor: isActive ? group.color : `${group.color}20`,
+                      borderColor: group.color,
+                      color: "#ffffff",
+                    }}
+                  >
+                    {group.label}
+                  </button>
+                );
+              }
+
+              // Fallback style for `grupo` (Supabase) or groups without explicit color
+              return (
+                <button
+                  key={group.label}
+                  type="button"
+                  onClick={() =>
+                    setFilter(activeGroupFilter === group.label ? "ALL" : group.label)
+                  }
+                  className={`${baseClasses} ${
+                    isActive
+                      ? "bg-purple-600 text-white border-purple-700"
+                      : "bg-purple-50 text-purple-700 border-purple-300 hover:bg-purple-100"
+                  }`}
+                >
+                  {group.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         <div className="space-y-2 max-h-[300px] overflow-y-auto">
-          {points.map((point) => (
+          {filteredPoints.map((point) => (
             <div
               key={point.id}
               className="p-3 bg-muted rounded-lg flex items-start justify-between gap-2 hover:bg-muted/80 transition-colors cursor-pointer"
@@ -120,12 +369,11 @@ const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPoin
                   <p className="text-xs font-semibold text-primary">
                     Cantidad: {point.quantity !== undefined && point.quantity !== null ? point.quantity : 1}
                   </p>
-                  {/* Temporarily hidden - persona ID display */}
-                  {/* {point.person_id && (
+                  {point.person_id && (
                     <p className="text-xs font-semibold text-blue-600">
                       ID Persona: {point.person_id}
                     </p>
-                  )} */}
+                  )}
                 </div>
               </div>
               <div className="flex gap-1 flex-shrink-0">
@@ -175,7 +423,6 @@ const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPoin
             </div>
           ))}
         </div>
-
       </CardContent>
     </Card>
   );

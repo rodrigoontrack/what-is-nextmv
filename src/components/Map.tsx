@@ -46,11 +46,30 @@ interface MapProps {
   zoomToRoute?: number | null; // Trigger to zoom to a specific route
   polygonMode?: boolean; // Enable polygon drawing mode
   onPolygonComplete?: (polygon: number[][]) => void; // Callback when polygon is completed
+  activePickupGroup?: string | "ALL"; // Active group filter for pickup points
 }
 
 const MAPBOX_TOKEN = "pk.eyJ1Ijoicm9kcmlnb2l2YW5mIiwiYSI6ImNtaHhoOHk4azAxNjcyanExb2E2dHl6OTMifQ.VO6hcKB-pIDvb8ZFFpLdfw";
 
-const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, focusLocation, zoomToRoute, polygonMode = false, onPolygonComplete }: MapProps) => {
+const Map = ({
+  pickupPoints,
+  routes,
+  vehicles = [],
+  visibleRoutes,
+  onRouteVisibilityChange,
+  onMapClick,
+  clickMode = false,
+  focusedPoint,
+  vehicleLocationMode,
+  vehicleStartLocation,
+  vehicleEndLocation,
+  selectedRouteIndex,
+  focusLocation,
+  zoomToRoute,
+  polygonMode = false,
+  onPolygonComplete,
+  activePickupGroup,
+}: MapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -470,6 +489,16 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       }
       
       if (!point || !pointLocation) return;
+
+      // Apply group filter: when a group is selected, only show markers
+      // for pickup points that belong to that group. Points without group
+      // (including temporary points created only from routes) are hidden.
+      if (activePickupGroup && activePickupGroup !== "ALL") {
+        const pointGroupLabel = point.group || point.grupo;
+        if (!pointGroupLabel || pointGroupLabel !== activePickupGroup) {
+          return;
+        }
+      }
       
       // Use selected route order if available, otherwise use general order
       const orderNumber = (selectedRouteIndex !== null && selectedRouteIndex !== undefined && selectedRouteStopOrderMap[pointId] !== undefined)
@@ -529,15 +558,22 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       
       const el = document.createElement("div");
       
-      // Determine marker color: prioritize pickup point's group_color, then route color, then primary
+      // Determine marker color:
+      // - If the point has a local group with a color, use that (local assignment takes priority)
+      // - If the point belongs to a route, use the route color (matches polyline color)
+      // - Otherwise, use gray (point has no group and doesn't belong to any route)
       let markerColor: string | undefined = undefined;
+      const hasLocalGroup = !!point?.group;
       
-      // First check if the pickup point has a group_color (local assignment)
-      if (point && point.group_color) {
+      if (hasLocalGroup && point?.group_color) {
+        // Local group with explicit color (highest priority)
         markerColor = point.group_color;
       } else if (routeIndex !== undefined) {
-        // Use route color if point belongs to a route
+        // Point belongs to a route -> use route color (matches polyline color)
         markerColor = routeColors[routeIndex % routeColors.length];
+      } else {
+        // No local group and not in any route -> gray marker
+        markerColor = "#9CA3AF"; // Tailwind gray-400
       }
       
       // Determine marker size based on number (larger for double digits)
@@ -1085,7 +1121,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       }
     }
     // NOTE: visibleRoutes and selectedRouteIndex are intentionally NOT in dependencies - we only update visibility/zoom via separate useEffects below
-  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex]);
+  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, activePickupGroup]);
 
   // Update route visibility when visibleRoutes changes (separate from route drawing to avoid redrawing)
   useEffect(() => {
