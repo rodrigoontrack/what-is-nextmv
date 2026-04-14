@@ -1,0 +1,91 @@
+import { Router } from "express";
+import { pool } from "../db/connection";
+
+const router = Router();
+
+// GET all vehicle optimizations (with vehicle plate)
+router.get("/", async (_req, res) => {
+  try {
+    const [rows] = await pool.query("SELECT * FROM vehicle_optimization");
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch vehicles", detail: String(err) });
+  }
+});
+
+// GET vehicle by plate (from vehicle table)
+router.get("/plate/:plate", async (req, res) => {
+  try {
+    const [rows]: any = await pool.query(
+      "SELECT * FROM vehicle WHERE plate = ?",
+      [req.params.plate]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: "Vehicle not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch vehicle by plate", detail: String(err) });
+  }
+});
+
+// GET single vehicle optimization
+router.get("/:id", async (req, res) => {
+  try {
+    const [rows]: any = await pool.query("SELECT * FROM vehicle_optimization WHERE id = ?", [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: "Not found" });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch vehicle", detail: String(err) });
+  }
+});
+
+// POST create vehicle optimization
+router.post("/", async (req, res) => {
+  const { max_distance, start_latitude, start_longitude, end_latitude, end_longitude, fk_vehicle } = req.body;
+  const values = [max_distance ?? null, start_latitude ?? null, start_longitude ?? null, end_latitude ?? null, end_longitude ?? null, fk_vehicle ?? null];
+  console.log("[POST /api/vehicles] body:", req.body);
+  console.log("[POST /api/vehicles] values:", values);
+  try {
+    const [result]: any = await pool.query(
+      `INSERT INTO vehicle_optimization (max_distance, start_latitude, start_longitude, end_latitude, end_longitude, fk_vehicle)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      values
+    );
+    console.log("[POST /api/vehicles] insertId:", result.insertId);
+    const [rows]: any = await pool.query("SELECT * FROM vehicle_optimization WHERE id = ?", [result.insertId]);
+    console.log("[POST /api/vehicles] created row:", rows[0]);
+    res.status(201).json(rows[0]);
+  } catch (err: any) {
+    console.error("[POST /api/vehicles] MYSQL ERROR:", err?.code, err?.sqlMessage, err?.sql);
+    res.status(500).json({ error: "Failed to create vehicle", detail: String(err), code: err?.code, sqlMessage: err?.sqlMessage });
+  }
+});
+
+// PUT update vehicle optimization
+router.put("/:id", async (req, res) => {
+  const { id } = req.params;
+  const { max_distance, start_latitude, start_longitude, end_latitude, end_longitude, fk_vehicle } = req.body;
+  try {
+    await pool.query(
+      `UPDATE vehicle_optimization SET max_distance=?, start_latitude=?, start_longitude=?, end_latitude=?, end_longitude=?, fk_vehicle=?
+       WHERE id=?`,
+      [max_distance ?? null, start_latitude, start_longitude, end_latitude ?? null, end_longitude ?? null, fk_vehicle, id]
+    );
+    const [rows]: any = await pool.query("SELECT * FROM vehicle_optimization WHERE id = ?", [id]);
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update vehicle", detail: String(err) });
+  }
+});
+
+// DELETE vehicle optimization
+router.delete("/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    await pool.query("DELETE FROM vehicle_optimization WHERE id = ?", [id]);
+    res.status(204).send();
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete vehicle", detail: String(err) });
+  }
+});
+
+export default router;
