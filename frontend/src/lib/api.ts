@@ -51,6 +51,9 @@ export const createBusStop = (data: any) =>
   request<any>("/bus-stops", { method: "POST", body: JSON.stringify(data) });
 
 // --- Vehicles ---
+export const getVehiclesByOrganization = (orgId: number) =>
+  request<any[]>(`/vehicles/organization/${orgId}`);
+
 export const getVehicleByPlate = (plate: string) =>
   request<any>(`/vehicles/plate/${encodeURIComponent(plate)}`);
 
@@ -66,6 +69,9 @@ export const getOptimization = (id: number) =>
 
 export const createOptimization = (data: any) =>
   request<any>("/optimizations", { method: "POST", body: JSON.stringify(data) });
+
+export const deleteOptimization = (id: number) =>
+  request<void>(`/optimizations/${id}`, { method: "DELETE" });
 
 // --- Routes ---
 export const getRoutesByOptimization = (optimizationId: number) =>

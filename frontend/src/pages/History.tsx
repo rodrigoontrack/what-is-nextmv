@@ -2,12 +2,13 @@ import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { History, Loader2, MapPin, Truck, Route, X, Download, ArrowLeft, ZoomIn } from "lucide-react";
+import { History, Loader2, MapPin, Truck, Route, X, Download, ArrowLeft, ZoomIn, Trash2 } from "lucide-react";
 import Layout from "@/components/Layout";
 import { useNavigate } from "react-router-dom";
 import Map from "@/components/Map";
-import { getPickupPoints, getOptimizations, getOptimization, getRoutesByOptimization, getStopsByRoute } from "@/lib/api";
+import { getPickupPoints, getOptimizations, getOptimization, getRoutesByOptimization, getStopsByRoute, deleteOptimization } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import * as XLSX from "xlsx";
 
 interface PickupPoint {
@@ -50,6 +51,8 @@ const HistoryPage = () => {
   const [selectedRouteIndex, setSelectedRouteIndex] = useState<number | null>(null);
   const [focusLocation, setFocusLocation] = useState<{ lon: number; lat: number } | null>(null);
   const [zoomToRoute, setZoomToRoute] = useState<number | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -102,6 +105,27 @@ const HistoryPage = () => {
     }
   };
 
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirmId) return;
+    setIsDeleting(true);
+    try {
+      await deleteOptimization(Number(deleteConfirmId));
+      setRuns(prev => prev.filter(r => String(r.id) !== deleteConfirmId));
+      if (selectedRunId === deleteConfirmId) {
+        setSelectedRunId(null);
+        setSelectedRunData(null);
+        setRoutes([]);
+        setVisibleRoutes(new Set());
+      }
+      toast({ title: "Ejecución eliminada", description: "La optimización fue eliminada correctamente." });
+    } catch (err) {
+      toast({ title: "Error", description: "No se pudo eliminar la ejecución.", variant: "destructive" });
+    } finally {
+      setIsDeleting(false);
+      setDeleteConfirmId(null);
+    }
+  };
+
   const handleRunSelect = async (runId: string) => {
     setSelectedRunId(runId);
     setIsOptimizing(true);
@@ -112,53 +136,99 @@ const HistoryPage = () => {
 
       const routesData = await getRoutesByOptimization(Number(runId));
 
-      if (!routesData || routesData.length === 0) {
-        throw new Error("No se encontraron rutas para esta optimización");
+      let finalRoutes: any[] = [];
+
+      if (routesData && routesData.length > 0) {
+        // Load stops for each saved route_optimization record
+        finalRoutes = await Promise.all(routesData.map(async (route: any) => {
+          const stops = await getStopsByRoute(route.id);
+
+          const route_data = {
+            id: route.nextmv_id || route.fk_vehicle || String(route.id),
+            route: stops.map((stop: any) => ({
+              stop: {
+                id: String(stop.fk_pickup_point),
+                location: { lat: Number(stop.latitude), lon: Number(stop.longitude) },
+              },
+            })),
+            route_travel_distance: Number(route.distance) || 0,
+            route_travel_duration: Number(route.time) || 0,
+          };
+
+          return {
+            id: route.id,
+            nextmv_id: route.nextmv_id,
+            vehicle_id: route.fk_vehicle,
+            name: route.fk_vehicle ? `Vehículo ${route.fk_vehicle}` : `Ruta ${route.id}`,
+            route_data,
+            stops: stops.map((stop: any) => ({
+              order: stop.order,
+              fk_pickup_point: {
+                latitude: stop.latitude,
+                longitude: stop.longitude,
+                address: stop.address,
+              },
+              passengers: [],
+            })),
+            total_distance: Number(route.distance) || 0,
+            total_duration: Number(route.time) || 0,
+            created_at: route.created_at,
+          };
+        }));
+      } else {
+        // Fall back to parsing the stored optimization_result JSON
+        const result = optimizationData?.optimization_result;
+        const solutions = result?.output?.solutions || result?.solutions || [];
+
+        solutions.forEach((solution: any) => {
+          (solution.vehicles || []).forEach((vehicle: any, index: number) => {
+            const routeStops = (vehicle.route || []).map((routeStop: any) => ({
+              stop: {
+                id: String(routeStop.stop?.id || ''),
+                location: {
+                  lat: Number(routeStop.stop?.location?.lat || 0),
+                  lon: Number(routeStop.stop?.location?.lon || 0),
+                },
+              },
+            }));
+
+            finalRoutes.push({
+              id: `result-${index}`,
+              nextmv_id: vehicle.id,
+              vehicle_id: vehicle.id,
+              name: vehicle.id || `Vehículo ${index + 1}`,
+              route_data: {
+                id: vehicle.id,
+                route: routeStops,
+                route_travel_distance: Number(vehicle.route_travel_distance || 0),
+                route_travel_duration: Number(vehicle.route_travel_duration || 0),
+              },
+              stops: routeStops.map((s: any, i: number) => ({
+                order: i,
+                fk_pickup_point: {
+                  latitude: s.stop.location.lat,
+                  longitude: s.stop.location.lon,
+                  address: null,
+                },
+                passengers: [],
+              })),
+              total_distance: Number(vehicle.route_travel_distance || 0),
+              total_duration: Number(vehicle.route_travel_duration || 0),
+            });
+          });
+        });
+
+        if (finalRoutes.length === 0) {
+          throw new Error("No se encontraron rutas para esta optimización");
+        }
       }
 
-      // For each route, load stops
-      const routesWithStops = await Promise.all(routesData.map(async (route: any) => {
-        const stops = await getStopsByRoute(route.id);
-
-        const route_data = {
-          id: route.nextmv_id || route.fk_vehicle || String(route.id),
-          route: stops.map((stop: any) => ({
-            stop: {
-              id: String(stop.fk_pickup_point),
-              location: { lat: Number(stop.latitude), lon: Number(stop.longitude) },
-            },
-          })),
-          route_travel_distance: Number(route.distance) || 0,
-          route_travel_duration: Number(route.time) || 0,
-        };
-
-        return {
-          id: route.id,
-          nextmv_id: route.nextmv_id,
-          vehicle_id: route.fk_vehicle,
-          name: route.fk_vehicle ? `Vehículo ${route.fk_vehicle}` : `Ruta ${route.id}`,
-          route_data,
-          stops: stops.map((stop: any) => ({
-            order: stop.order,
-            fk_pickup_point: {
-              latitude: stop.latitude,
-              longitude: stop.longitude,
-              address: stop.address,
-            },
-            passengers: [],
-          })),
-          total_distance: Number(route.distance) || 0,
-          total_duration: Number(route.time) || 0,
-          created_at: route.created_at,
-        };
-      }));
-
-      setRoutes(routesWithStops);
-      setVisibleRoutes(new Set(routesWithStops.map((_, index) => index)));
+      setRoutes(finalRoutes);
+      setVisibleRoutes(new Set(finalRoutes.map((_, index) => index)));
 
       toast({
         title: "Ejecución cargada",
-        description: `Se cargaron ${routesWithStops.length} rutas exitosamente`,
+        description: `Se cargaron ${finalRoutes.length} rutas exitosamente`,
       });
     } catch (error) {
       console.error("Error loading run:", error);
@@ -479,6 +549,28 @@ const HistoryPage = () => {
 
   return (
     <Layout>
+      <AlertDialog open={!!deleteConfirmId} onOpenChange={open => !open && setDeleteConfirmId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Eliminar ejecución?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta acción no se puede deshacer. Se eliminará permanentemente la optimización y no podrás recuperarla.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              disabled={isDeleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {isDeleting ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Eliminar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Banner indicating historical execution */}
       {selectedRunId && routes.length > 0 && (
         <Card className="mb-4 border-primary/50 bg-primary/5">
@@ -602,12 +694,18 @@ const HistoryPage = () => {
                                 <span className="text-[10px] opacity-75">💡 Click para ver todas las optimizaciones relacionadas</span>
                             </p>
                           </div>
-                          {isSelected && isOptimizing && (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          )}
-                          {isSelected && !isOptimizing && (
-                            <span className="text-xs">✓ Seleccionado</span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {isSelected && isOptimizing && <Loader2 className="w-4 h-4 animate-spin" />}
+                            {isSelected && !isOptimizing && <span className="text-xs">✓ Seleccionado</span>}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                              onClick={e => { e.stopPropagation(); setDeleteConfirmId(runId); }}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </div>
                         </div>
                       </CardContent>
                     </Card>
@@ -1136,9 +1234,9 @@ const HistoryPage = () => {
           <div className="relative min-w-0 flex-1">
             <Card className="h-[calc(100vh-240px)] w-full">
               <CardContent className="p-0 h-full w-full">
-                <Map 
-                  pickupPoints={pickupPoints} 
-                  routes={routes} 
+                <Map
+                  pickupPoints={[]}
+                  routes={routes}
                   vehicles={vehicles}
                   visibleRoutes={visibleRoutes}
                   onRouteVisibilityChange={(routeIndex, visible) => {

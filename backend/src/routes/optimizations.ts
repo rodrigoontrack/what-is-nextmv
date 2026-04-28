@@ -44,4 +44,16 @@ router.post("/", async (req, res) => {
   }
 });
 
+// DELETE optimization
+router.delete("/:id", async (req, res) => {
+  try {
+    const [result]: any = await pool.query("DELETE FROM optimization WHERE id = ?", [req.params.id]);
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Not found" });
+    res.status(204).send();
+  } catch (err: any) {
+    console.error("[DELETE /api/optimizations/:id] MYSQL ERROR:", err?.code, err?.sqlMessage);
+    res.status(500).json({ error: "Failed to delete optimization", detail: String(err) });
+  }
+});
+
 export default router;

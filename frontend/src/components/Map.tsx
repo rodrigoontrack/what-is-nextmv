@@ -71,8 +71,13 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       setMapLoaded(true);
     });
 
+    const resizeObserver = new ResizeObserver(() => {
+      map.current?.resize();
+    });
+    resizeObserver.observe(mapContainer.current);
+
     return () => {
-      // Clean up markers
+      resizeObserver.disconnect();
       markersRef.current.forEach((marker) => {
         marker.remove();
       });

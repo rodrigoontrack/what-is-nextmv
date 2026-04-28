@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git config *)",
+      "Bash(git -C /c/Users/Linds/Desktop/Ontrack/dev-frontend-web ls-tree --name-only origin/master)",
+      "Bash(git -C /c/Users/Linds/Desktop/Ontrack/dev-frontend-web ls-tree --name-only origin/master src/)",
+      "Bash(git -C /c/Users/Linds/Desktop/Ontrack/dev-frontend-web/ branch)",
+      "Bash(sed -e 's|from \"@/components/ui/button\"|from \"../components/ui/button\"|g' -e 's|from \"@/components/ui/card\"|from \"../components/ui/card\"|g' -e 's|from \"@/hooks/use-toast\"|from \"../hooks/use-toast\"|g' -e 's|from \"@/lib/api\"|from \"../api/api\"|g' -e 's|from \"@/components/Layout\"|from \"../components/Layout/Layout\"|g' -e 's|from \"@/components/ui/tabs\"|from \"../components/ui/tabs\"|g' -e 's|from \"@/components/ui/input\"|from \"../components/ui/input\"|g' -e 's|from \"@/components/ui/label\"|from \"../components/ui/label\"|g' -e 's|from \"@/components/ui/select\"|from \"../components/ui/select\"|g' -e 's|from \"@/components/ui/dialog\"|from \"../components/ui/dialog\"|g' -e 's|from \"@/components/ui/alert-dialog\"|from \"../components/ui/alert-dialog\"|g' -e 's|from \"@/components/ui/badge\"|from \"../components/ui/badge\"|g' -e 's|from \"@/components/ui/checkbox\"|from \"../components/ui/checkbox\"|g' /c/Users/Linds/Desktop/Ontrack/optimizador/what-is-nextmv/frontend/src/pages/Geocoding.tsx)",
+      "Bash(sed -e 's|from \"@/components/ui/button\"|from \"../components/ui/button\"|g' -e 's|from \"@/components/Layout\"|from \"../components/Layout/Layout\"|g' /c/Users/Linds/Desktop/Ontrack/optimizador/what-is-nextmv/frontend/src/pages/NotFound.tsx)",
+      "Bash(npm --version)"
+    ]
+  }
+}

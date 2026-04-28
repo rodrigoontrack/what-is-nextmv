@@ -13,6 +13,22 @@ router.get("/", async (_req, res) => {
   }
 });
 
+// GET vehicles by organization (from vehicle_organization table joined with vehicle)
+router.get("/organization/:orgId", async (req, res) => {
+  try {
+    const [rows]: any = await pool.query(
+      `SELECT v.plate, v.alias
+       FROM vehicle_organization vo
+       JOIN vehicle v ON vo.fk_vehicle = v.plate
+       WHERE vo.fk_organization = ?`,
+      [req.params.orgId]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch organization vehicles", detail: String(err) });
+  }
+});
+
 // GET vehicle by plate (from vehicle table)
 router.get("/plate/:plate", async (req, res) => {
   try {

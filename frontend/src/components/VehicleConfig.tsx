@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getVehicleByPlate } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Truck, Trash2, Edit, X, Plus, Upload, Download } from "lucide-react";
+import { Truck, Trash2, Edit, X, Plus, Upload, Download, Zap, ChevronRight } from "lucide-react";
 import * as XLSX from "xlsx";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -29,7 +29,8 @@ interface Vehicle {
   id?: string;
   name: string;
   capacity: number;
-  max_distance: number;
+  max_distance?: number;
+  isQuickConfig?: boolean;
   start_location?: {
     lon: number;
     lat: number;
@@ -52,8 +53,16 @@ interface PickupPoint {
   grupo?: string;
 }
 
+interface QuickGroup {
+  id: string;
+  quantity: number;
+  capacity: number;
+  maxDistance?: number;
+}
+
 interface VehicleConfigProps {
   onAdd: (vehicle: Vehicle) => void;
+  onAddMultiple?: (vehicles: Vehicle[]) => void;
   onUpdate?: (vehicleId: string, vehicle: Vehicle) => void;
   onDelete: (vehicleId: string) => void;
   onDeleteAll?: () => void;
@@ -67,7 +76,7 @@ interface VehicleConfigProps {
   pickupPoints?: PickupPoint[];
 }
 
-const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen, onVehicleExcelUpload, routes = [], pickupPoints = [] }: VehicleConfigProps) => {
+const VehicleConfig = ({ onAdd, onAddMultiple, onUpdate, onDelete, onDeleteAll, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen, onVehicleExcelUpload, routes = [], pickupPoints = [] }: VehicleConfigProps) => {
   // Debug logging
   useEffect(() => {
     console.log('[VehicleConfig] Props received:', {
@@ -87,10 +96,21 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
       });
     }
   }, [routes, vehicles, pickupPoints]);
+  const [configMode, setConfigMode] = useState<"select" | "registered" | "quick">(
+    vehicles.length > 0 ? "registered" : "select"
+  );
+
+  // Quick config states
+  const [quickGroups, setQuickGroups] = useState<QuickGroup[]>([]);
+  const [quickQuantity, setQuickQuantity] = useState("1");
+  const [quickCapacity, setQuickCapacity] = useState("30");
+  const [quickMaxDistance, setQuickMaxDistance] = useState("100");
+
+  // Registered mode states
   const [editingVehicle, setEditingVehicle] = useState<Vehicle | null>(null);
   const [name, setName] = useState("");
   const [capacity, setCapacity] = useState("100");
-  const [maxDistance, setMaxDistance] = useState("100");
+  const [maxDistance, setMaxDistance] = useState("");
   const [plateStatus, setPlateStatus] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
   const [plateData, setPlateData] = useState<any>(null);
   const [startLocationMode, setStartLocationMode] = useState<"manual" | "pickup" | "map">("pickup");
@@ -106,7 +126,7 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
     if (editingVehicle) {
       setName(editingVehicle.name);
       setCapacity(editingVehicle.capacity.toString());
-      setMaxDistance(editingVehicle.max_distance.toString());
+      setMaxDistance(editingVehicle.max_distance != null ? editingVehicle.max_distance.toString() : "");
       
       if (editingVehicle.start_location) {
         setStartLocationMode("manual");
@@ -130,7 +150,7 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
     } else {
       setName("");
       setCapacity("100");
-      setMaxDistance("100");
+      setMaxDistance("");
       setStartLocationMode("pickup");
       setEndLocationMode("none");
       setStartLon("");
@@ -176,6 +196,51 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endLon, endLat, endLocationMode]);
+
+  const handleAddQuickGroup = () => {
+    const qty = parseInt(quickQuantity);
+    const cap = parseInt(quickCapacity);
+    const dist = parseFloat(quickMaxDistance);
+    if (!qty || qty < 1 || !cap || cap < 1) {
+      toast({ title: "Error", description: "Cantidad y capacidad deben ser mayores a 0", variant: "destructive" });
+      return;
+    }
+    const maxDist = parseFloat(quickMaxDistance);
+    setQuickGroups(prev => [...prev, { id: `qg-${Date.now()}`, quantity: qty, capacity: cap, maxDistance: (!isNaN(maxDist) && maxDist > 0) ? maxDist : undefined }]);
+    setQuickQuantity("1");
+  };
+
+  const handleRemoveQuickGroup = (id: string) => {
+    setQuickGroups(prev => prev.filter(g => g.id !== id));
+  };
+
+  const handleApplyQuickConfig = () => {
+    if (quickGroups.length === 0) return;
+    const cap = quickGroups.reduce((sum, g) => sum + g.quantity * g.capacity, 0);
+    const pax = pickupPoints.reduce((sum, p) => sum + (p.quantity || 1), 0);
+    if (pickupPoints.length > 0 && cap < pax) {
+      toast({
+        title: "Capacidad insuficiente",
+        description: `La capacidad total (${cap} puestos) no cubre los ${pax} pasajeros. Agrega más vehículos o aumenta la capacidad.`,
+        variant: "destructive",
+      });
+      return;
+    }
+    const newVehicles: Vehicle[] = [];
+    let counter = vehicles.length + 1;
+    quickGroups.forEach(group => {
+      for (let i = 0; i < group.quantity; i++) {
+        newVehicles.push({ name: `Vehículo ${counter++}`, capacity: group.capacity, isQuickConfig: true, ...(group.maxDistance != null ? { max_distance: group.maxDistance } : {}) });
+      }
+    });
+    if (onAddMultiple) {
+      onAddMultiple(newVehicles);
+    } else {
+      newVehicles.forEach(v => onAdd(v));
+    }
+    setQuickGroups([]);
+    toast({ title: "Vehículos generados", description: `Se agregaron ${newVehicles.length} vehículos a la optimización` });
+  };
 
   const handlePlateBlur = async () => {
     if (!name.trim()) {
@@ -241,10 +306,10 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!name || !capacity || !maxDistance) {
+    if (!name || !capacity) {
       toast({
         title: "Error",
-        description: "Por favor completa todos los campos",
+        description: "Por favor completa la placa y la capacidad",
         variant: "destructive",
       });
       return;
@@ -295,10 +360,13 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
       }
     }
 
+    const parsedMaxDistance = maxDistance.trim() ? parseFloat(maxDistance) : undefined;
     const vehicle: Vehicle = {
       name,
       capacity: parseInt(capacity),
-      max_distance: parseFloat(maxDistance),
+      ...(parsedMaxDistance != null && !isNaN(parsedMaxDistance) && parsedMaxDistance > 0
+        ? { max_distance: parsedMaxDistance }
+        : {}),
     };
 
     // Add start location if manual mode
@@ -340,7 +408,7 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
     if (!editingVehicle) {
       setName("");
       setCapacity("100");
-      setMaxDistance("100");
+      setMaxDistance("");
       setStartLocationMode("pickup");
       setEndLocationMode("none");
       setStartLon("");
@@ -374,98 +442,253 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
     XLSX.writeFile(wb, "plantilla_vehiculos.xlsx");
   };
 
+  const totalQuickVehicles = quickGroups.reduce((sum, g) => sum + g.quantity, 0);
+  const totalQuickCapacity = quickGroups.reduce((sum, g) => sum + g.quantity * g.capacity, 0);
+  const totalPassengers = pickupPoints.reduce((sum, p) => sum + (p.quantity || 1), 0);
+  const hasPassengerData = pickupPoints.length > 0;
+  const capacityShortfall = hasPassengerData ? totalPassengers - totalQuickCapacity : 0;
+  const capacitySufficient = !hasPassengerData || totalQuickCapacity >= totalPassengers;
+
   return (
     <>
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Truck className="w-5 h-5" />
-            Vehículos ({vehicles.length})
+          <CardTitle className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2">
+              <Truck className="w-5 h-5" />
+              Vehículos ({vehicles.length})
+            </span>
+            {configMode !== "select" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="text-xs text-muted-foreground h-7 px-2 font-normal"
+                onClick={() => setConfigMode("select")}
+              >
+                Cambiar método
+              </Button>
+            )}
           </CardTitle>
-          <div className="flex gap-2 flex-wrap overflow-hidden" style={{ marginTop: '32px' }}>
-            {onVehicleExcelUpload && (
-              <label htmlFor="vehicle-excel-upload" className="cursor-pointer flex-shrink-0">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="cursor-pointer px-3 whitespace-nowrap"
-                  onClick={() => document.getElementById("vehicle-excel-upload")?.click()}
-                >
-                  <Upload className="w-4 h-4 mr-1.5" />
-                  Subir Excel
-                </Button>
-                <input
-                  id="vehicle-excel-upload"
-                  type="file"
-                  accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file && onVehicleExcelUpload) {
-                      onVehicleExcelUpload(file);
-                    }
-                    e.target.value = "";
-                  }}
-                  className="hidden"
-                />
-              </label>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="px-3 whitespace-nowrap flex-shrink-0"
-              onClick={handleDownloadVehicleTemplate}
-            >
-              <Download className="w-4 h-4 mr-1.5" />
-              Plantilla
-            </Button>
-            <Button
-              onClick={() => {
-                setEditingVehicle(null);
-                setIsDialogOpen?.(true);
-              }}
-              size="sm"
-              className="px-3 whitespace-nowrap flex-shrink-0"
-            >
-              <Plus className="w-4 h-4 mr-1.5" />
-              Agregar Vehículo
-            </Button>
-            {onDeleteAll && vehicles.length > 0 && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    className="px-3 whitespace-nowrap flex-shrink-0"
-                  >
-                    <Trash2 className="w-4 h-4 mr-1.5" />
-                    Eliminar Todos
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>¿Eliminar todos los vehículos?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      ¿Estás seguro de que deseas eliminar todos los {vehicles.length} vehículos? Esta acción no se puede deshacer.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={onDeleteAll}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+
+          {/* Active mode badge + action buttons */}
+          {configMode === "registered" && (
+            <div className="space-y-3 mt-1">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 font-medium">
+                  <Truck className="w-3 h-3" />
+                  Vehículos Registrados
+                </span>
+              </div>
+              <div className="flex gap-2 flex-wrap overflow-hidden">
+                {onVehicleExcelUpload && (
+                  <label htmlFor="vehicle-excel-upload" className="cursor-pointer flex-shrink-0">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="cursor-pointer px-3 whitespace-nowrap"
+                      onClick={() => document.getElementById("vehicle-excel-upload")?.click()}
                     >
-                      Eliminar Todos
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-          </div>
+                      <Upload className="w-4 h-4 mr-1.5" />
+                      Subir Excel
+                    </Button>
+                    <input
+                      id="vehicle-excel-upload"
+                      type="file"
+                      accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file && onVehicleExcelUpload) onVehicleExcelUpload(file);
+                        e.target.value = "";
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+                <Button type="button" variant="outline" size="sm" className="px-3 whitespace-nowrap flex-shrink-0" onClick={handleDownloadVehicleTemplate}>
+                  <Download className="w-4 h-4 mr-1.5" />
+                  Plantilla
+                </Button>
+                <Button onClick={() => { setEditingVehicle(null); setIsDialogOpen?.(true); }} size="sm" className="px-3 whitespace-nowrap flex-shrink-0">
+                  <Plus className="w-4 h-4 mr-1.5" />
+                  Agregar Vehículo
+                </Button>
+                {onDeleteAll && vehicles.length > 0 && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button type="button" variant="destructive" size="sm" className="px-3 whitespace-nowrap flex-shrink-0">
+                        <Trash2 className="w-4 h-4 mr-1.5" />
+                        Eliminar Todos
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>¿Eliminar todos los vehículos?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          ¿Estás seguro de que deseas eliminar todos los {vehicles.length} vehículos? Esta acción no se puede deshacer.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                        <AlertDialogAction onClick={onDeleteAll} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                          Eliminar Todos
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+              </div>
+            </div>
+          )}
+
+          {configMode === "quick" && (
+            <div className="flex items-center gap-2 mt-1">
+              <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-orange-50 text-orange-700 border border-orange-200 font-medium">
+                <Zap className="w-3 h-3" />
+                Configuración Rápida
+              </span>
+            </div>
+          )}
         </CardHeader>
+
         <CardContent className="space-y-4">
+          {/* ── SELECTION SCREEN ── */}
+          {configMode === "select" && (
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">¿Cómo quieres configurar los vehículos para esta optimización?</p>
+              <div className="grid grid-cols-1 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setConfigMode("registered")}
+                  className="group w-full text-left p-4 rounded-xl border-2 border-border hover:border-blue-400 hover:bg-blue-50/50 transition-all duration-150"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex-shrink-0 w-9 h-9 rounded-lg bg-blue-100 flex items-center justify-center group-hover:bg-blue-200 transition-colors">
+                      <Truck className="w-4 h-4 text-blue-700" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">Mis vehículos ya están registrados</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Los vehículos están dados de alta en la plataforma. Los identifico por placa y el sistema valida su existencia.
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0 mt-2 group-hover:text-blue-600 transition-colors" />
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setConfigMode("quick")}
+                  className="group w-full text-left p-4 rounded-xl border-2 border-border hover:border-orange-400 hover:bg-orange-50/50 transition-all duration-150"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="mt-0.5 flex-shrink-0 w-9 h-9 rounded-lg bg-orange-100 flex items-center justify-center group-hover:bg-orange-200 transition-colors">
+                      <Zap className="w-4 h-4 text-orange-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm">Configuración rápida sin registro</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Solo indico cuántos vehículos necesito y su capacidad. Ideal cuando no importa la identificación del vehículo.
+                      </p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0 mt-2 group-hover:text-orange-600 transition-colors" />
+                  </div>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── QUICK CONFIG UI ── */}
+          {configMode === "quick" && (
+            <div className="space-y-4">
+              <div className="p-3 border rounded-lg space-y-3 bg-muted/30">
+                <p className="text-sm font-medium">Agregar grupo de vehículos</p>
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Cantidad</Label>
+                    <Input type="number" min="1" value={quickQuantity} onChange={(e) => setQuickQuantity(e.target.value)} placeholder="Ej: 5" className="h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Capacidad</Label>
+                    <Input type="number" min="1" value={quickCapacity} onChange={(e) => setQuickCapacity(e.target.value)} placeholder="Ej: 30" className="h-8" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Dist. máx <span className="text-muted-foreground">(opc.)</span></Label>
+                    <Input type="number" min="1" value={quickMaxDistance} onChange={(e) => setQuickMaxDistance(e.target.value)} placeholder="Sin límite" className="h-8" />
+                  </div>
+                </div>
+                <Button type="button" variant="outline" size="sm" className="w-full" onClick={handleAddQuickGroup}>
+                  <Plus className="w-4 h-4 mr-1.5" />
+                  Agregar grupo
+                </Button>
+              </div>
+
+              {quickGroups.length > 0 ? (
+                <div className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Grupos configurados</p>
+                  {quickGroups.map((group) => (
+                    <div key={group.id} className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-center justify-center w-8 h-8 rounded-full bg-orange-100 text-orange-700 font-bold text-sm">
+                          {group.quantity}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium">{group.quantity} {group.quantity === 1 ? "vehículo" : "vehículos"}</p>
+                          <p className="text-xs text-muted-foreground">Capacidad {group.capacity}{group.maxDistance != null ? ` · Dist. máx ${group.maxDistance} km` : " · Sin límite de distancia"}</p>
+                        </div>
+                      </div>
+                      <Button type="button" variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={() => handleRemoveQuickGroup(group.id)}>
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  {/* Capacity vs passengers indicator */}
+                  {hasPassengerData && (
+                    <div className={`flex items-start gap-2 p-3 rounded-lg text-sm ${capacitySufficient ? "bg-green-50 border border-green-200" : "bg-red-50 border border-red-200"}`}>
+                      <span className={`text-base leading-none mt-0.5 flex-shrink-0 ${capacitySufficient ? "text-green-600" : "text-red-500"}`}>
+                        {capacitySufficient ? "✓" : "✗"}
+                      </span>
+                      <div>
+                        <p className={`font-medium ${capacitySufficient ? "text-green-700" : "text-red-700"}`}>
+                          {capacitySufficient
+                            ? `Capacidad suficiente (${totalQuickCapacity} puestos para ${totalPassengers} pasajeros)`
+                            : `Capacidad insuficiente — faltan ${capacityShortfall} puestos`}
+                        </p>
+                        {!capacitySufficient && (
+                          <p className="text-xs text-red-600 mt-0.5">
+                            Tienes {totalQuickCapacity} puestos en total y {totalPassengers} pasajeros a repartir.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="pt-2 border-t flex items-center justify-between">
+                    <p className="text-sm text-muted-foreground">
+                      Total: <span className="font-semibold text-foreground">{totalQuickVehicles} vehículos</span>
+                      {hasPassengerData && (
+                        <span className="ml-2 text-xs">· {totalQuickCapacity} puestos</span>
+                      )}
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleApplyQuickConfig}
+                      disabled={!capacitySufficient}
+                      title={!capacitySufficient ? `Faltan ${capacityShortfall} puestos para cubrir los ${totalPassengers} pasajeros` : undefined}
+                    >
+                      <Truck className="w-4 h-4 mr-1.5" />
+                      Generar {totalQuickVehicles} vehículos
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-1">Agrega al menos un grupo para generar vehículos.</p>
+              )}
+            </div>
+          )}
+
           {vehicles.length > 0 ? (
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {vehicles.map((vehicle, idx) => {
@@ -614,7 +837,7 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
                         )}
                       </div>
                       <p className="text-muted-foreground">
-                        Capacidad: {vehicle.capacity} | Dist. máx: {vehicle.max_distance} km
+                        Capacidad: {vehicle.capacity}{vehicle.max_distance != null ? ` | Dist. máx: ${vehicle.max_distance} km` : ""}
                       </p>
                     </div>
                   <div className="flex gap-1">
@@ -671,9 +894,13 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
               })}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground text-center py-4">
-              No hay vehículos configurados. Haz clic en "Agregar Vehículo" para comenzar.
-            </p>
+            configMode !== "select" && (
+              <p className="text-sm text-muted-foreground text-center py-4">
+                {configMode === "registered"
+                  ? "No hay vehículos. Haz clic en \"Agregar Vehículo\" para comenzar."
+                  : "No hay vehículos. Agrega grupos arriba y haz clic en \"Generar\"."}
+              </p>
+            )
           )}
         </CardContent>
       </Card>
@@ -736,13 +963,16 @@ const VehicleConfig = ({ onAdd, onUpdate, onDelete, onDeleteAll, vehicles, onMap
               />
             </div>
             <div>
-              <Label htmlFor="max-distance">Distancia Máxima (km)</Label>
+              <Label htmlFor="max-distance" className="flex items-center gap-1">
+                Distancia Máxima (km)
+                <span className="text-xs text-muted-foreground font-normal">(opcional)</span>
+              </Label>
               <Input
                 id="max-distance"
                 type="number"
                 value={maxDistance}
                 onChange={(e) => setMaxDistance(e.target.value)}
-                placeholder="100"
+                placeholder="Sin límite"
               />
             </div>
 

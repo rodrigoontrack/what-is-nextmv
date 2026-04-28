@@ -2,13 +2,13 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { getPickupPoints, createPickupPoint, updatePickupPoint, deletePickupPoint, getOptimizations, getOptimization, createOptimization, getRoutesByOptimization, createRoute, createStop, createVehicleOptimization, createRouteRecord, createSchedule, createRouteSchedule, createRouteScheduleVehicle, createBusStop, getOrganization} from "@/lib/api";
+import { getPickupPoints, createPickupPoint, updatePickupPoint, deletePickupPoint, getOptimizations, getOptimization, createOptimization, getRoutesByOptimization, createRoute, createStop, createVehicleOptimization, createRouteRecord, createSchedule, createRouteSchedule, createRouteScheduleVehicle, createBusStop, getOrganization, getVehicleByPlate, getVehiclesByOrganization } from "@/lib/api";
 import Map from "@/components/Map";
 import PickupPointForm from "@/components/PickupPointForm";
 import VehicleConfig from "@/components/VehicleConfig";
 import PickupPointsList from "@/components/PickupPointsList";
 import Layout from "@/components/Layout";
-import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Settings, Menu, ZoomIn } from "lucide-react";
+import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Pencil, Settings, Menu, ZoomIn } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Loader2 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -51,7 +51,8 @@ interface Vehicle {
   id?: string;
   name: string;
   capacity: number;
-  max_distance: number;
+  max_distance?: number;
+  isQuickConfig?: boolean;
   start_location?: {
     lon: number;
     lat: number;
@@ -81,6 +82,7 @@ const Index = () => {
   const [nextmvJson, setNextmvJson] = useState<any>(null);
   const [nextmvEndpoint, setNextmvEndpoint] = useState<string | null>(null);
   const [showNextmvJson, setShowNextmvJson] = useState(false);
+  const [isPanelCollapsed, setIsPanelCollapsed] = useState(false);
   const [previewJsonDialogOpen, setPreviewJsonDialogOpen] = useState(false);
   const [optimizationConfig, setOptimizationConfig] = useState({
     travelType: "distance" as "distance" | "time",
@@ -96,6 +98,7 @@ const Index = () => {
   const [isDeleteAllPointsDialogOpen, setIsDeleteAllPointsDialogOpen] = useState(false);
   const [visibleRoutes, setVisibleRoutes] = useState<Set<number>>(new Set());
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [showReplaceResultsDialog, setShowReplaceResultsDialog] = useState(false);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState<number | null>(null);
   const [focusLocation, setFocusLocation] = useState<{ lon: number; lat: number } | null>(null);
   const [zoomToRoute, setZoomToRoute] = useState<number | null>(null);
@@ -108,6 +111,12 @@ const Index = () => {
   const [selectedVehicleForSave, setSelectedVehicleForSave] = useState<any>(null);
   const [isSaveRouteDialogOpen, setIsSaveRouteDialogOpen] = useState(false);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [tempVehiclePlate, setTempVehiclePlate] = useState('');
+  const [includeSchedule, setIncludeSchedule] = useState(false);
+  const [orgVehicles, setOrgVehicles] = useState<any[]>([]);
+  const [plateSuggestions, setPlateSuggestions] = useState<string[]>([]);
+  const [showPlateSuggestions, setShowPlateSuggestions] = useState(false);
+  const plateDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [routeFormName, setRouteFormName] = useState('');
   const [routeFormCode, setRouteFormCode] = useState('');
   const [routeFormType, setRouteFormType] = useState(0);
@@ -219,14 +228,13 @@ const Index = () => {
         pickupPoints,
         vehicles,
         pendingRouteData,
-        selectedRunData,
         selectedRunId,
         visibleRoutes: [...visibleRoutes],
       }));
     } catch {
       // quota exceeded or other storage error
     }
-  }, [routes, pickupPoints, vehicles, pendingRouteData, selectedRunData, selectedRunId, visibleRoutes]);
+  }, [routes, pickupPoints, vehicles, pendingRouteData, selectedRunId, visibleRoutes]);
 
   useEffect(() => {
     loadRuns();
@@ -240,6 +248,9 @@ const Index = () => {
       })
       .catch(() => { /* keep default Bogotá center */ })
       .finally(() => setOrgCenterReady(true));
+    getVehiclesByOrganization(321)
+      .then(setOrgVehicles)
+      .catch(() => {});
   }, []);
 
 
@@ -350,7 +361,17 @@ const Index = () => {
   };
 
   const handleExportToKML = async () => {
-    if (!selectedRunData) {
+    // Build solutions from selectedRunData if available, otherwise reconstruct from routes state
+    let solutions: any[] = [];
+    if (selectedRunData) {
+      solutions = selectedRunData.output?.solutions || selectedRunData.solutions || [];
+    }
+    if (solutions.length === 0 && routes.length > 0) {
+      // Reconstruct from routes state — each route.route_data is the Nextmv vehicle object
+      solutions = [{ vehicles: routes.map(r => r.route_data).filter(Boolean) }];
+    }
+
+    if (solutions.length === 0 || solutions[0]?.vehicles?.length === 0) {
       toast({
         title: "Error",
         description: "No hay datos de optimización para exportar",
@@ -360,16 +381,6 @@ const Index = () => {
     }
 
     try {
-      const solutions = selectedRunData.output?.solutions || selectedRunData.solutions || [];
-      
-      if (solutions.length === 0) {
-        toast({
-          title: "Error",
-          description: "No hay soluciones disponibles para exportar",
-          variant: "destructive",
-        });
-        return;
-      }
 
       // Show loading toast
       toast({
@@ -816,17 +827,26 @@ const Index = () => {
             }
           }
           
-          // Fallback to pickupPoints if not found in Supabase
-          if (!address) {
-            const extractOriginalPointId = (stopId: string): string => {
-              if (!stopId) return stopId;
-              const idx = stopId.indexOf('__person_');
-              return idx > -1 ? stopId.substring(0, idx) : stopId;
+          // Fallback to pickupPoints if not found in DB
+          if (!address || passengers.length === 0) {
+            const extractOriginalPointId = (sid: string): string => {
+              if (!sid) return sid;
+              const idx = sid.indexOf('__person_');
+              return idx > -1 ? sid.substring(0, idx) : sid;
             };
             const originalPointId = extractOriginalPointId(stopId);
             const point = pickupPoints.find(p => p.id === originalPointId);
             if (point) {
-              address = point.address || point.name || "";
+              if (!address) address = point.address || point.name || "";
+              if (passengers.length === 0) {
+                if (point.all_nombres && point.all_nombres.length > 0) {
+                  passengers = point.all_nombres.map(n => ({ name: n, code: null }));
+                } else if (point.person_id) {
+                  passengers = point.person_id.split(',').map(id => id.trim()).filter(Boolean).map(id => ({ name: id, code: id }));
+                } else if (point.name) {
+                  passengers = [{ name: point.name, code: null }];
+                }
+              }
             }
           }
           
@@ -1755,11 +1775,11 @@ const Index = () => {
       const finLonIdx     = findIdx(["fin_longitud", "fin_lon"]);
       const grupoIdx      = findIdx(["grupo"]);
 
-      if (placaIdx === -1 || capacidadIdx === -1 || distanciaIdx === -1) {
-        console.error("Missing required columns:", { placaIdx, capacidadIdx, distanciaIdx });
+      if (placaIdx === -1 || capacidadIdx === -1) {
+        console.error("Missing required columns:", { placaIdx, capacidadIdx });
         toast({
           title: "Error",
-          description: `No se encontraron todas las columnas requeridas. Buscando: "placa", "capacidad", "distancia_maxima". Columnas encontradas: ${headers.join(", ")}`,
+          description: `No se encontraron las columnas requeridas. Buscando: "placa", "capacidad". Columnas encontradas: ${headers.join(", ")}`,
           variant: "destructive",
         });
         return;
@@ -1773,8 +1793,8 @@ const Index = () => {
       for (const row of dataRows) {
         const placa = String(row[placaIdx] ?? "").trim();
         const capacidad = parseFloat(String(row[capacidadIdx] ?? ""));
-        const distanciaRaw = parseFloat(String(row[distanciaIdx] ?? ""));
-        const distanciaMax = isNaN(distanciaRaw) ? 0 : distanciaRaw; // 0 = sin límite
+        const distanciaRaw = distanciaIdx !== -1 ? parseFloat(String(row[distanciaIdx] ?? "")) : NaN;
+        const distanciaMax = (!isNaN(distanciaRaw) && distanciaRaw > 0) ? distanciaRaw : undefined;
         const grupo = grupoIdx !== -1 ? String(row[grupoIdx] ?? "").trim() : undefined;
 
         console.log("Processing row:", { placa, capacidad, distanciaMax, grupo, rawRow: row });
@@ -1972,6 +1992,11 @@ const Index = () => {
     if (vehicle.end_location) setCurrentVehicleEndLocation(vehicle.end_location);
   };
 
+  const handleAddMultipleVehicles = (newVehicles: Vehicle[]) => {
+    const withIds = newVehicles.map((v, i) => ({ ...v, id: `local-${Date.now()}-${i}` }));
+    setVehicles(prev => [...prev, ...withIds]);
+  };
+
   const handleUpdateVehicle = (vehicleId: string, vehicle: Vehicle) => {
     setVehicles(vehicles.map((v) => (v.id === vehicleId ? { ...vehicle, id: vehicleId } : v)));
   };
@@ -2065,27 +2090,26 @@ const Index = () => {
             endLocation = vehicle.end_location;
           }
           
-          // Ensure capacity and max_distance are proper numbers
-          // max_distance is stored in km in the UI, convert to meters for Nextmv API
+          // Ensure capacity is a proper number
           const capacity = Number(parseInt(String(vehicle.capacity), 10)) || 100;
-          const maxDistanceKm = Number(parseFloat(String(vehicle.max_distance))) || 100;
-          const maxDistance = maxDistanceKm * 1000; // Convert km to meters
-          
+
           if (!skipValidation) {
             if (isNaN(capacity) || capacity <= 0 || !Number.isInteger(capacity)) {
               throw new Error(`Invalid capacity for vehicle ${vehicle.name || vehicle.id}: ${vehicle.capacity}`);
             }
-            
-            if (isNaN(maxDistance) || maxDistance <= 0 || !isFinite(maxDistance)) {
-              throw new Error(`Invalid max_distance for vehicle ${vehicle.name || vehicle.id}: ${vehicle.max_distance}`);
-            }
           }
-          
+
+          // max_distance is optional — omit from payload when not set
+          const maxDistanceKm = vehicle.max_distance != null ? Number(parseFloat(String(vehicle.max_distance))) : null;
+          const maxDistanceMeters = (maxDistanceKm != null && !isNaN(maxDistanceKm) && maxDistanceKm > 0)
+            ? maxDistanceKm * 1000
+            : null;
+
           const vehiclePayload: any = {
             id: String(vehicle.id || `vehicle-${index}`),
-            capacity: Number(capacity), // Capacity should be an integer
-            max_distance: Number(maxDistance),
-            speed: Number(10) // Speed in m/s (10 m/s = 36 km/h)
+            capacity: Number(capacity),
+            speed: Number(10), // Speed in m/s (10 m/s = 36 km/h)
+            ...(maxDistanceMeters != null ? { max_distance: Number(maxDistanceMeters) } : {}),
           };
           
           // Add start location only if explicitly specified
@@ -2276,10 +2300,22 @@ const Index = () => {
       return;
     }
 
+    const totalCapacity = vehicles.reduce((sum, v) => sum + (v.capacity || 0), 0);
+    const totalPassengers = pickupPoints.reduce((sum, p) => sum + (p.quantity || 1), 0);
+    if (totalCapacity < totalPassengers) {
+      toast({
+        title: "Capacidad insuficiente",
+        description: `Los vehículos tienen ${totalCapacity} puestos en total y hay ${totalPassengers} pasajeros. Agrega más vehículos o aumenta su capacidad para poder cubrir todos los puntos.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
     setIsOptimizing(true);
     setIsNewRunMode(true);
     setSelectedRunId(null);
     setSelectedRunData(null);
+    setIsPanelCollapsed(false);
     try {
       // STEP 1: pickup_points already exist in MySQL — map local IDs to DB records
       console.log("=== MAPPING LOCAL PICKUP_POINTS TO DB ===");
@@ -2718,8 +2754,15 @@ const Index = () => {
         console.log("Solution vehicles from Nextmv:", (solution.vehicles || []).map((v: any) => ({ id: v.id })));
         for (let index = 0; index < vehicles.length; index++) {
           const localVehicle = vehicles[index];
-          const plate = localVehicle.name || `vehicle-${index}`;
           const nextmvVehicleId = String(localVehicle.id || `vehicle-${index}`);
+
+          // Skip DB record creation for quick-config vehicles — they have no real plate yet
+          if (localVehicle.isQuickConfig) {
+            console.log(`STEP 2 — Vehicle ${index}: quick-config, skipping vehicle_optimization`);
+            continue;
+          }
+
+          const plate = localVehicle.name || `vehicle-${index}`;
           console.log(`STEP 2 — Vehicle ${index}: plate="${plate}", nextmvVehicleId="${nextmvVehicleId}"`);
           try {
             const payload = {
@@ -2730,7 +2773,6 @@ const Index = () => {
               end_latitude: localVehicle.end_location?.lat || null,
               end_longitude: localVehicle.end_location?.lon || null,
             };
-            console.log(`STEP 2 — sending vehicle payload:`, payload);
             const vehicleData = await createVehicleOptimization(payload);
             vehicleMap.set(nextmvVehicleId, vehicleData);
             console.log(`✅ STEP 2 — Created vehicle_optimization id=${vehicleData.id} for plate="${plate}"`);
@@ -2787,6 +2829,7 @@ const Index = () => {
         });
       setRoutes(routesFromSolution);
       setVisibleRoutes(new Set(routesFromSolution.map((_: any, index: number) => index)));
+      setSelectedRunData(data);
 
       toast({
         title: "Rutas optimizadas",
@@ -2824,6 +2867,10 @@ const Index = () => {
       return idx > -1 ? stopId.substring(0, idx) : stopId;
     };
 
+    const { vehicleMap, optimizationId } = pendingRouteData;
+    const vehicleNextmvId = selectedVehicleForSave.id;
+    const dbVehicle = vehicleMap[vehicleNextmvId];
+
     try {
       // 1. Create route record
       const routeRecord = await createRouteRecord({
@@ -2835,75 +2882,100 @@ const Index = () => {
       });
       console.log(`✅ Created route id=${routeRecord.id}`);
 
-      // 2. Create schedule record
-      const scheduleRecord = await createSchedule({
-        name: scheduleFormName.trim() || routeFormName.trim(),
-        ...scheduleFormDays,
-        start_time: scheduleFormStartTime || null,
-        end_time: scheduleFormEndTime || null,
-        fk_organization: 321,
-      });
-      console.log(`✅ Created schedule id=${scheduleRecord.id}`);
+      if (includeSchedule) {
+        // For quick-config vehicles: validate plate exists in DB, then create vehicle_optimization
+        let resolvedDbVehicle = dbVehicle;
+        if (!resolvedDbVehicle) {
+          const plate = tempVehiclePlate.trim();
+          if (!plate) throw new Error("Se requiere la placa del vehículo para crear el horario");
 
-      // 3. Create route_schedule (links route + schedule)
-      const routeScheduleRecord = await createRouteSchedule({
-        fk_route: routeRecord.id,
-        fk_schedule: scheduleRecord.id,
-        firebase_trace_url: null,
-      });
-      console.log(`✅ Created route_schedule id=${routeScheduleRecord.id}`);
+          const vehicleRecord = await getVehicleByPlate(plate).catch(() => null);
+          if (!vehicleRecord) {
+            toast({
+              title: "Vehículo no encontrado",
+              description: `La placa "${plate}" no está registrada en el sistema. Verifica la placa e inténtalo de nuevo.`,
+              variant: "destructive",
+            });
+            setIsSavingRoute(false);
+            return;
+          }
 
-      // 4. Create route_schedule_vehicle using the plate directly as fk_vehicle
-      const { vehicleMap, optimizationId } = pendingRouteData;
-      const vehicleNextmvId = selectedVehicleForSave.id;
-      const dbVehicle = vehicleMap[vehicleNextmvId];
-      if (!dbVehicle) throw new Error(`No se encontró vehicle_optimization para "${vehicleNextmvId}"`);
-
-      const vehiclePlate = dbVehicle.fk_vehicle; // plate stored from Excel's "placa" column
-      await createRouteScheduleVehicle({
-        fk_vehicle: vehiclePlate,
-        fk_route_schedule: routeScheduleRecord.id,
-      });
-      console.log(`✅ Created route_schedule_vehicle fk_vehicle="${vehiclePlate}"`);
-
-      // 5. Create route_optimization for this vehicle
-      const routeData = await createRoute({
-        nextmv_id: `${Date.now()}-route-${vehicleNextmvId}`,
-        fk_optimization: optimizationId ?? null,
-        fk_vehicle_optimization: dbVehicle.id,
-        fk_route: routeRecord.id,
-        distance: Number(selectedVehicleForSave.route_travel_distance || selectedVehicleForSave.route_distance || 0),
-        time: Number(selectedVehicleForSave.route_travel_duration || selectedVehicleForSave.route_duration || 0),
-      });
-      console.log(`✅ Created route_optimization id=${routeData.id}`);
-
-      // 3. Create bus_stop + stop_optimization for each stop of this vehicle
-      let stopOrder = 0;
-      for (const routeStop of selectedVehicleForSave.route || []) {
-        const stopNextmvId = routeStop.stop?.id;
-        if (!stopNextmvId || stopNextmvId.includes("-end")) continue;
-        const originalStopId = extractOriginalPointId(stopNextmvId);
-        const dbPickupPoint = pickupPoints.find(p => p.id === originalStopId);
-        if (!dbPickupPoint) continue;
-        try {
-          // Create bus_stop record with coordinates from pickup_point
-          const busStopRecord = await createBusStop({
-            latitude: dbPickupPoint.latitude,
-            longitude: dbPickupPoint.longitude,
-            address: dbPickupPoint.address || null,
-            next_stop: stopOrder,
-            fk_route_schedule: routeScheduleRecord.id,
-            special: 0,
+          resolvedDbVehicle = await createVehicleOptimization({
+            fk_vehicle: plate,
+            max_distance: null,
+            start_latitude: orgCenter[1],
+            start_longitude: orgCenter[0],
+            end_latitude: orgCenter[1],
+            end_longitude: orgCenter[0],
           });
-          // Create stop_optimization linking bus_stop + pickup_point
-          await createStop({
-            order: stopOrder++,
-            fk_pickup_point: Number(dbPickupPoint.id),
-            fk_route_optimization: routeData.id,
-            fk_bus_stop: busStopRecord.id,
-          });
-        } catch (err: any) {
-          console.error(`Error creating stop:`, err?.message);
+          if (pendingRouteData) {
+            pendingRouteData.vehicleMap[vehicleNextmvId] = resolvedDbVehicle;
+          }
+        }
+
+        // 2. Create schedule record
+        const scheduleRecord = await createSchedule({
+          name: scheduleFormName.trim() || routeFormName.trim(),
+          ...scheduleFormDays,
+          start_time: scheduleFormStartTime || null,
+          end_time: scheduleFormEndTime || null,
+          fk_organization: 321,
+        });
+        console.log(`✅ Created schedule id=${scheduleRecord.id}`);
+
+        // 3. Create route_schedule (links route + schedule)
+        const routeScheduleRecord = await createRouteSchedule({
+          fk_route: routeRecord.id,
+          fk_schedule: scheduleRecord.id,
+          firebase_trace_url: null,
+        });
+        console.log(`✅ Created route_schedule id=${routeScheduleRecord.id}`);
+
+        // 4. Create route_schedule_vehicle
+        const vehiclePlate = tempVehiclePlate.trim() || resolvedDbVehicle.fk_vehicle;
+        await createRouteScheduleVehicle({
+          fk_vehicle: vehiclePlate,
+          fk_route_schedule: routeScheduleRecord.id,
+        });
+        console.log(`✅ Created route_schedule_vehicle fk_vehicle="${vehiclePlate}"`);
+
+        // 5. Create route_optimization for this vehicle
+        const routeData = await createRoute({
+          nextmv_id: `${Date.now()}-route-${vehicleNextmvId}`,
+          fk_optimization: optimizationId ?? null,
+          fk_vehicle_optimization: resolvedDbVehicle.id,
+          fk_route: routeRecord.id,
+          distance: Number(selectedVehicleForSave.route_travel_distance || selectedVehicleForSave.route_distance || 0),
+          time: Number(selectedVehicleForSave.route_travel_duration || selectedVehicleForSave.route_duration || 0),
+        });
+        console.log(`✅ Created route_optimization id=${routeData.id}`);
+
+        // 6. Create bus_stop + stop_optimization for each stop of this vehicle
+        let stopOrder = 0;
+        for (const routeStop of selectedVehicleForSave.route || []) {
+          const stopNextmvId = routeStop.stop?.id;
+          if (!stopNextmvId || stopNextmvId.includes("-end")) continue;
+          const originalStopId = extractOriginalPointId(stopNextmvId);
+          const dbPickupPoint = pickupPoints.find(p => p.id === originalStopId);
+          if (!dbPickupPoint) continue;
+          try {
+            const busStopRecord = await createBusStop({
+              latitude: dbPickupPoint.latitude,
+              longitude: dbPickupPoint.longitude,
+              address: dbPickupPoint.address || null,
+              next_stop: stopOrder,
+              fk_route_schedule: routeScheduleRecord.id,
+              special: 0,
+            });
+            await createStop({
+              order: stopOrder++,
+              fk_pickup_point: Number(dbPickupPoint.id),
+              fk_route_optimization: routeData.id,
+              fk_bus_stop: busStopRecord.id,
+            });
+          } catch (err: any) {
+            console.error(`Error creating stop:`, err?.message);
+          }
         }
       }
 
@@ -2929,6 +3001,29 @@ const Index = () => {
 
   return (
     <Layout>
+      <AlertDialog open={showReplaceResultsDialog} onOpenChange={setShowReplaceResultsDialog}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Reemplazar los resultados actuales?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Tienes una optimización en curso. Si re-optimizas, los resultados actuales se perderán.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2 sm:flex-row">
+            <AlertDialogCancel className="flex-1 sm:mt-0">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowReplaceResultsDialog(false);
+                handleOptimizeRoutes();
+              }}
+              className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              Sí, re-optimizar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
         {/* Optimization Section */}
         <Card className="mb-6">
           <CardHeader className="pb-3">
@@ -2980,7 +3075,13 @@ const Index = () => {
             )}
             <div className="flex justify-end">
               <Button
-                onClick={handleOptimizeRoutes}
+                onClick={() => {
+                  if (routes.length > 0) {
+                    setShowReplaceResultsDialog(true);
+                  } else {
+                    handleOptimizeRoutes();
+                  }
+                }}
                 disabled={isOptimizing || pickupPoints.length < 2 || vehicles.length === 0}
                 className="bg-primary hover:bg-primary/90"
                 size="default"
@@ -3131,12 +3232,14 @@ const Index = () => {
                       </Card>
                     </TabsContent>
                     <TabsContent value="vehicles" className="mt-0">
-                      <VehicleConfig 
+                      <VehicleConfig
                         onAdd={handleAddVehicle}
+                        onAddMultiple={handleAddMultipleVehicles}
                         onUpdate={handleUpdateVehicle}
                         onDelete={handleDeleteVehicle}
                         onDeleteAll={handleDeleteAllVehicles}
                         vehicles={vehicles}
+                        pickupPoints={pickupPoints}
                         onMapClickMode={handleVehicleLocationMapClick}
                         onLocationUpdate={handleVehicleLocationUpdate}
                         isDialogOpen={isVehicleDialogOpen}
@@ -3356,12 +3459,42 @@ const Index = () => {
           };
 
           return (
-            <div className="w-[450px] flex-shrink-0 flex flex-col h-[calc(100vh-240px)] pr-2">
+            <div className={`relative flex-shrink-0 flex h-[calc(100vh-240px)] transition-all duration-300 ease-in-out ${isPanelCollapsed ? 'w-8' : 'w-[450px]'}`}>
+              {/* Collapsed state — thin strip with expand button */}
+              {isPanelCollapsed && (
+                <div className="w-8 flex flex-col items-center justify-center h-full">
+                  <button
+                    onClick={() => setIsPanelCollapsed(false)}
+                    className="flex flex-col items-center gap-2 text-muted-foreground hover:text-foreground transition-colors group"
+                    title="Expandir panel"
+                  >
+                    <ChevronRight className="w-5 h-5 group-hover:text-primary transition-colors" />
+                    <span className="text-[10px] font-medium tracking-widest uppercase [writing-mode:vertical-rl] rotate-180 opacity-60 group-hover:opacity-100">
+                      Rutas
+                    </span>
+                  </button>
+                </div>
+              )}
+
+              {/* Expanded panel */}
+              {!isPanelCollapsed && (
+                <div className="w-[450px] flex flex-col h-full pr-2">
+                  {/* Collapse toggle — attached to right edge */}
+                  <button
+                    onClick={() => setIsPanelCollapsed(true)}
+                    className="absolute -right-3 top-1/2 -translate-y-1/2 z-10 w-6 h-12 bg-background border rounded-full shadow-md flex items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-colors"
+                    title="Colapsar panel"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+
               <Tabs defaultValue="summary" className="w-full h-full flex flex-col">
-                <TabsList className="grid w-full grid-cols-2 mb-2 flex-shrink-0 h-10">
-                  <TabsTrigger value="summary">Resumen</TabsTrigger>
-                  <TabsTrigger value="routes">Rutas</TabsTrigger>
-                </TabsList>
+                <div className="flex items-center gap-2 mb-2 flex-shrink-0">
+                  <TabsList className="grid grid-cols-2 h-10 flex-1">
+                    <TabsTrigger value="summary">Resumen</TabsTrigger>
+                    <TabsTrigger value="routes">Rutas</TabsTrigger>
+                  </TabsList>
+                </div>
                 
                 <TabsContent value="summary" className="!mt-0 h-[calc(100%-2.5rem)]">
                   <div className="h-full flex flex-col">
@@ -3374,19 +3507,30 @@ const Index = () => {
                         <History className="w-4 h-4" />
                         Optimización
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-6 w-6"
-                        onClick={() => {
-                          setSelectedRunId(null);
-                          setSelectedRunData(null);
-                          setRoutes([]);
-                          setVisibleRoutes(new Set());
-                        }}
-                      >
-                        <X className="w-4 h-4" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          title="Editar parámetros"
+                          onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6"
+                          onClick={() => {
+                            setSelectedRunId(null);
+                            setSelectedRunData(null);
+                            setRoutes([]);
+                            setVisibleRoutes(new Set());
+                          }}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm flex-1 min-h-0 overflow-y-auto">
@@ -3570,6 +3714,8 @@ const Index = () => {
                                         e.stopPropagation();
                                         setSelectedVehicleForSave(route.route_data);
                                         setRouteFormName(vehicleName);
+                                        setTempVehiclePlate('');
+                                        setIncludeSchedule(false);
                                         setIsSaveRouteDialogOpen(true);
                                       }}
                                     >
@@ -3911,6 +4057,8 @@ const Index = () => {
                   </div>
                 </TabsContent>
               </Tabs>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -4027,6 +4175,12 @@ const Index = () => {
           <DialogHeader>
             <DialogTitle>Guardar Ruta</DialogTitle>
           </DialogHeader>
+          {(() => {
+            const dbVehicleForSave = selectedVehicleForSave && pendingRouteData
+              ? pendingRouteData.vehicleMap[String(selectedVehicleForSave.id)]
+              : null;
+            const isQuickConfig = !dbVehicleForSave;
+            return (
           <div className="space-y-4 py-2">
             {/* Route fields */}
             <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ruta</p>
@@ -4074,71 +4228,157 @@ const Index = () => {
             {/* Schedule fields */}
             <div className="border-t pt-3">
               <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Horario</p>
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <Label htmlFor="schedule-name">Nombre del horario</Label>
-                  <Input
-                    id="schedule-name"
-                    placeholder="Ej: Horario Mañana"
-                    value={scheduleFormName}
-                    onChange={e => setScheduleFormName(e.target.value)}
-                  />
+
+              {/* For quick-config vehicles: radio selector */}
+              {isQuickConfig && (
+                <div className="space-y-2 mb-3">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="schedule-mode"
+                      checked={!includeSchedule}
+                      onChange={() => setIncludeSchedule(false)}
+                      className="accent-primary"
+                    />
+                    <span className="text-sm">Solo guardar la ruta</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="schedule-mode"
+                      checked={includeSchedule}
+                      onChange={() => setIncludeSchedule(true)}
+                      className="accent-primary"
+                    />
+                    <span className="text-sm">Quiero configurar el vehículo y crear horario</span>
+                  </label>
                 </div>
-                <div className="space-y-1">
-                  <Label>Días</Label>
-                  <div className="grid grid-cols-7 gap-1">
-                    {([
-                      { key: 'monday', label: 'L' },
-                      { key: 'tuesday', label: 'M' },
-                      { key: 'wednesday', label: 'X' },
-                      { key: 'thursday', label: 'J' },
-                      { key: 'friday', label: 'V' },
-                      { key: 'saturday', label: 'S' },
-                      { key: 'sunday', label: 'D' },
-                    ] as const).map(({ key, label }) => (
-                      <button
-                        key={key}
-                        type="button"
-                        onClick={() => setScheduleFormDays(d => ({ ...d, [key]: !d[key] }))}
-                        className={`h-8 w-full rounded text-xs font-medium border transition-colors ${
-                          scheduleFormDays[key]
-                            ? 'bg-primary text-primary-foreground border-primary'
-                            : 'bg-background text-muted-foreground border-input hover:bg-muted'
-                        }`}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
+              )}
+
+              {(includeSchedule || !isQuickConfig) && (
+                <div className="space-y-3">
+                  {isQuickConfig && (
+                    <div className="space-y-1 relative">
+                      <Label htmlFor="vehicle-plate-search">Placa del vehículo <span className="text-destructive">*</span></Label>
+                      <Input
+                        id="vehicle-plate-search"
+                        placeholder="Escribe para buscar..."
+                        value={tempVehiclePlate}
+                        autoComplete="off"
+                        onChange={e => {
+                          const val = e.target.value.toUpperCase();
+                          setTempVehiclePlate(val);
+                          setShowPlateSuggestions(false);
+                          if (plateDebounceRef.current) clearTimeout(plateDebounceRef.current);
+                          if (val.trim()) {
+                            plateDebounceRef.current = setTimeout(() => {
+                              const matches = orgVehicles
+                                .filter(v => (v.plate as string).toUpperCase().includes(val.toUpperCase()) || (v.alias as string)?.toUpperCase().includes(val.toUpperCase()))
+                                .map(v => v.plate as string);
+                              setPlateSuggestions(matches);
+                              setShowPlateSuggestions(true);
+                            }, 2000);
+                          }
+                        }}
+                        onBlur={() => setTimeout(() => setShowPlateSuggestions(false), 150)}
+                      />
+                      {showPlateSuggestions && (
+                        <div className="absolute z-50 w-full bg-background border rounded-md shadow-md mt-1 max-h-48 overflow-y-auto">
+                          {plateSuggestions.length === 0 ? (
+                            <p className="text-sm text-muted-foreground px-3 py-2">No se encontraron vehículos con esa placa.</p>
+                          ) : (
+                            plateSuggestions.map(plate => (
+                              <button
+                                key={plate}
+                                type="button"
+                                className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors"
+                                onMouseDown={e => e.preventDefault()}
+                                onClick={() => {
+                                  setTempVehiclePlate(plate);
+                                  setShowPlateSuggestions(false);
+                                }}
+                              >
+                                {plate}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   <div className="space-y-1">
-                    <Label htmlFor="start-time">Hora inicio</Label>
+                    <Label htmlFor="schedule-name">Nombre del horario</Label>
                     <Input
-                      id="start-time"
-                      type="time"
-                      value={scheduleFormStartTime}
-                      onChange={e => setScheduleFormStartTime(e.target.value)}
+                      id="schedule-name"
+                      placeholder="Ej: Horario Mañana"
+                      value={scheduleFormName}
+                      onChange={e => setScheduleFormName(e.target.value)}
                     />
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="end-time">Hora fin</Label>
-                    <Input
-                      id="end-time"
-                      type="time"
-                      value={scheduleFormEndTime}
-                      onChange={e => setScheduleFormEndTime(e.target.value)}
-                    />
+                    <Label>Días</Label>
+                    <div className="grid grid-cols-7 gap-1">
+                      {([
+                        { key: 'monday', label: 'L' },
+                        { key: 'tuesday', label: 'M' },
+                        { key: 'wednesday', label: 'X' },
+                        { key: 'thursday', label: 'J' },
+                        { key: 'friday', label: 'V' },
+                        { key: 'saturday', label: 'S' },
+                        { key: 'sunday', label: 'D' },
+                      ] as const).map(({ key, label }) => (
+                        <button
+                          key={key}
+                          type="button"
+                          onClick={() => setScheduleFormDays(d => ({ ...d, [key]: !d[key] }))}
+                          className={`h-8 w-full rounded text-xs font-medium border transition-colors ${
+                            scheduleFormDays[key]
+                              ? 'bg-primary text-primary-foreground border-primary'
+                              : 'bg-background text-muted-foreground border-input hover:bg-muted'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="start-time">Hora inicio</Label>
+                      <Input
+                        id="start-time"
+                        type="time"
+                        value={scheduleFormStartTime}
+                        onChange={e => setScheduleFormStartTime(e.target.value)}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <Label htmlFor="end-time">Hora fin</Label>
+                      <Input
+                        id="end-time"
+                        type="time"
+                        value={scheduleFormEndTime}
+                        onChange={e => setScheduleFormEndTime(e.target.value)}
+                      />
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
+            );
+          })()}
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="outline" onClick={() => setIsSaveRouteDialogOpen(false)} disabled={isSavingRoute}>
               Cancelar
             </Button>
-            <Button onClick={handleSaveRoute} disabled={isSavingRoute || !routeFormName.trim()}>
+            <Button
+              onClick={handleSaveRoute}
+              disabled={isSavingRoute || !routeFormName.trim() || (includeSchedule && !tempVehiclePlate.trim() && (() => {
+                const dbV = selectedVehicleForSave && pendingRouteData ? pendingRouteData.vehicleMap[String(selectedVehicleForSave.id)] : null;
+                return !dbV || /^vehicle-\d+$/.test(dbV?.fk_vehicle || '');
+              })())}
+            >
               {isSavingRoute ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Route className="w-4 h-4 mr-2" />}
               {isSavingRoute ? "Guardando..." : "Guardar"}
             </Button>
