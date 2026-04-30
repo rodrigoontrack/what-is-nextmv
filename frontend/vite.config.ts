@@ -36,6 +36,9 @@ export default defineConfig(({ mode }) => ({
     },
   },
   plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+  optimizeDeps: {
+    include: ["react-joyride"],
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

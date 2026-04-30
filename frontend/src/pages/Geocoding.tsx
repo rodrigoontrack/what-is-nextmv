@@ -1,24 +1,14 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
 import Layout from "@/components/Layout";
 import Map from "@/components/Map";
-import { Upload, Download, Loader2, MapPin } from "lucide-react";
+import { Upload, Download, Loader2, MapPin, FileDown, Pencil, X } from "lucide-react";
 import * as XLSX from "xlsx";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 
 interface PassengerData {
-  id: string;
+  codigo: string;
   name: string;
   address: string;
   city: string;
@@ -26,15 +16,26 @@ interface PassengerData {
   longitude?: number;
 }
 
-const GOOGLE_GEOCODING_API_KEY = "AIzaSyBYx-lRgZgoWEfAlrmSBcNAeA8ImgqWNGc";
+const GOOGLE_GEOCODING_API_KEY = import.meta.env.VITE_GOOGLE_GEOCODING_API_KEY as string;
 
 const Geocoding = () => {
   const [file, setFile] = useState<File | null>(null);
   const [passengers, setPassengers] = useState<PassengerData[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
-  const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [correctingIndex, setCorrectingIndex] = useState<number | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement>(null);
   const { toast } = useToast();
+
+  useEffect(() => {
+    if (correctingIndex === null) return;
+    mapContainerRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCorrectingIndex(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [correctingIndex]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFile = e.target.files?.[0];
@@ -52,15 +53,10 @@ const Geocoding = () => {
       const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
       const jsonData: any[] = XLSX.utils.sheet_to_json(firstSheet);
 
-      // Validate required columns
-      const requiredColumns = ["id", "name", "address", "city"];
+      const requiredColumns = ["codigo", "nombre", "direccion", "ciudad"];
       const firstRow = jsonData[0];
       if (!firstRow) {
-        toast({
-          title: "Error",
-          description: "El archivo Excel está vacío",
-          variant: "destructive",
-        });
+        toast({ title: "Error", description: "El archivo Excel está vacío", variant: "destructive" });
         return;
       }
 
@@ -68,97 +64,52 @@ const Geocoding = () => {
       if (!hasAllColumns) {
         toast({
           title: "Error",
-          description: "El archivo Excel debe contener las columnas: id, name, address, city",
+          description: "El archivo Excel debe contener las columnas: codigo, nombre, direccion, ciudad. Descarga la plantilla para ver el formato correcto.",
           variant: "destructive",
         });
         return;
       }
 
       const passengersData: PassengerData[] = jsonData.map((row: any) => ({
-        id: String(row.id || ""),
-        name: String(row.name || ""),
-        address: String(row.address || ""),
-        city: String(row.city || ""),
+        codigo: String(row.codigo || ""),
+        name: String(row.nombre || ""),
+        address: String(row.direccion || ""),
+        city: String(row.ciudad || ""),
       }));
 
       setPassengers(passengersData);
-      toast({
-        title: "Archivo cargado",
-        description: `${passengersData.length} pasajeros encontrados`,
-      });
+      toast({ title: "Archivo cargado", description: `${passengersData.length} pasajeros encontrados` });
     } catch (error) {
       console.error("Error reading Excel file:", error);
-      toast({
-        title: "Error",
-        description: "No se pudo leer el archivo Excel",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "No se pudo leer el archivo Excel", variant: "destructive" });
     }
   };
 
-  // Clean address by removing unnecessary information that doesn't help geocoding
   const cleanAddress = (address: string): string => {
     if (!address) return "";
-
-    let cleaned = address.trim();
-
-    // Remove common prefixes that don't help
-    cleaned = cleaned.replace(/^(dirección|direccion|address|calle|street|avenida|av\.?|avda\.?):\s*/i, "");
-    
-    // Remove apartment/unit numbers and related patterns
-    // Patterns: Apt 123, Apt. 123, Apto 123, Apto. 123, #123, No. 123, Unit 123, Dept 123, etc.
-    cleaned = cleaned.replace(/\s*(apt|apartamento|apartamento|apto|apartamento|unit|unidad|dept|departamento|dpto|dpt|#|no\.?|numero|num\.?)\s*\d+/i, "");
-    
-    // Remove floor numbers: Piso 3, Floor 3, 3er Piso, etc.
-    cleaned = cleaned.replace(/\s*(piso|floor|nivel|level)\s*\d+/i, "");
-    cleaned = cleaned.replace(/\s*\d+(er|do|ro|th|st|nd|rd)?\s*(piso|floor|nivel|level)/i, "");
-    
-    // Remove building/block patterns that might confuse: Edificio X, Bloque Y, Torre Z
-    cleaned = cleaned.replace(/\s*(edificio|building|bloque|block|torre|tower|complejo|complex)\s+[a-z0-9]+/i, "");
-    
-    // Remove extra whitespace and normalize
-    cleaned = cleaned.replace(/\s+/g, " ").trim();
-    
-    // Remove trailing commas and punctuation that might cause issues
-    cleaned = cleaned.replace(/[,;:]+$/, "").trim();
-
-    return cleaned;
+    // Only normalize whitespace and trailing punctuation — Colombian addresses
+    // use # as a structural separator (e.g. "Calle 118 # 14-20") so no content is removed.
+    return address.trim().replace(/\s+/g, " ").replace(/[,;:]+$/, "").trim();
   };
 
   const geocodeAddress = async (address: string, city: string): Promise<{ lat: number; lng: number } | null> => {
     try {
-      // Clean the address first
       const cleanedAddress = cleanAddress(address);
-      
-      // Combine address and city for better geocoding accuracy
-      const fullAddress = city && city.trim() 
-        ? `${cleanedAddress}, ${city.trim()}` 
-        : cleanedAddress;
-      
-      if (!fullAddress || fullAddress.trim() === "") {
-        console.warn("Empty address after cleaning");
-        return null;
-      }
+      const fullAddress = city && city.trim() ? `${cleanedAddress}, ${city.trim()}` : cleanedAddress;
+
+      if (!fullAddress || fullAddress.trim() === "") return null;
 
       const encodedAddress = encodeURIComponent(fullAddress);
       const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodedAddress}&key=${GOOGLE_GEOCODING_API_KEY}`;
-      
+
       const response = await fetch(url);
       const data = await response.json();
 
       if (data.status === "OK" && data.results && data.results.length > 0) {
         const location = data.results[0].geometry.location;
-        return {
-          lat: location.lat,
-          lng: location.lng,
-        };
-      } else if (data.status === "ZERO_RESULTS") {
-        console.warn(`No results found for address: ${fullAddress}`);
-        return null;
-      } else {
-        console.error(`Geocoding error for ${fullAddress}:`, data.status);
-        return null;
+        return { lat: location.lat, lng: location.lng };
       }
+      return null;
     } catch (error) {
       console.error(`Error geocoding address ${address}:`, error);
       return null;
@@ -167,18 +118,13 @@ const Geocoding = () => {
 
   const handleStartGeocoding = () => {
     if (passengers.length === 0) {
-      toast({
-        title: "Error",
-        description: "Por favor, carga un archivo Excel primero",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "Por favor, carga un archivo Excel primero", variant: "destructive" });
       return;
     }
-    setShowConfirmDialog(true);
+    processGeocoding();
   };
 
   const processGeocoding = async () => {
-    setShowConfirmDialog(false);
     setIsProcessing(true);
     setProgress({ current: 0, total: passengers.length });
 
@@ -193,18 +139,13 @@ const Geocoding = () => {
         continue;
       }
 
-      // Add a small delay to avoid rate limiting (Google allows up to 50 requests/second)
       if (i > 0 && i % 10 === 0) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
       const location = await geocodeAddress(passenger.address, passenger.city || "");
       if (location) {
-        updatedPassengers.push({
-          ...passenger,
-          latitude: location.lat,
-          longitude: location.lng,
-        });
+        updatedPassengers.push({ ...passenger, latitude: location.lat, longitude: location.lng });
       } else {
         updatedPassengers.push({ ...passenger });
       }
@@ -214,53 +155,58 @@ const Geocoding = () => {
     setIsProcessing(false);
 
     const successCount = updatedPassengers.filter((p) => p.latitude && p.longitude).length;
+    toast({ title: "Geocodificación completada", description: `${successCount} de ${passengers.length} direcciones geocodificadas` });
+  };
+
+  const handleMapClick = (lng: number, lat: number) => {
+    if (correctingIndex === null) return;
+    setPassengers((prev) =>
+      prev.map((p, i) => (i === correctingIndex ? { ...p, latitude: lat, longitude: lng } : p))
+    );
     toast({
-      title: "Geocodificación completada",
-      description: `${successCount} de ${passengers.length} direcciones geocodificadas`,
+      title: "Coordenadas actualizadas",
+      description: `Ubicación de ${passengers[correctingIndex].name} corregida`,
     });
+    setCorrectingIndex(null);
+  };
+
+  const downloadTemplate = () => {
+    const worksheet = XLSX.utils.aoa_to_sheet([["codigo", "nombre", "direccion", "ciudad"]]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Plantilla");
+    XLSX.writeFile(workbook, "plantilla_geocodificacion.xlsx");
   };
 
   const downloadExcel = () => {
     if (passengers.length === 0) {
-      toast({
-        title: "Error",
-        description: "No hay datos para descargar",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: "No hay datos para descargar", variant: "destructive" });
       return;
     }
 
-    // Prepare data for Excel
+    // Columns match the pickup points template exactly
     const excelData = passengers.map((p) => ({
-      id: p.id,
-      name: p.name,
-      address: p.address,
-      city: p.city,
-      latitude: p.latitude ?? "",
-      longitude: p.longitude ?? "",
+      nombre: p.name,
+      direccion: p.address,
+      latitud: p.latitude ?? "",
+      longitud: p.longitude ?? "",
+      codigo: p.codigo,
     }));
 
-    // Create workbook and worksheet
     const worksheet = XLSX.utils.json_to_sheet(excelData);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Geocoded Data");
 
-    // Generate Excel file and download
     const fileName = `geocoded_${new Date().toISOString().split("T")[0]}.xlsx`;
     XLSX.writeFile(workbook, fileName);
 
-    toast({
-      title: "Descarga completada",
-      description: `Archivo ${fileName} descargado exitosamente`,
-    });
+    toast({ title: "Descarga completada", description: `Archivo ${fileName} descargado exitosamente` });
   };
 
-  // Convert geocoded passengers to pickup points format for the map
   const mapPickupPoints = useMemo(() => {
     return passengers
       .filter((p) => p.latitude !== undefined && p.longitude !== undefined)
       .map((p) => ({
-        id: p.id,
+        id: p.codigo,
         name: p.name,
         address: p.address,
         latitude: p.latitude!,
@@ -270,39 +216,57 @@ const Geocoding = () => {
 
   const hasGeocodedPoints = mapPickupPoints.length > 0;
 
-  // Calculate cost: $0.005 per address
-  const geocodingCost = passengers.length * 0.005;
+  const correctingPassenger = correctingIndex !== null ? passengers[correctingIndex] : null;
+
+  const tableRows = (passengers: PassengerData[], showCorrectButton: boolean) =>
+    passengers.map((passenger, index) => (
+      <tr
+        key={`${passenger.codigo}-${index}`}
+        className={`border-t hover:bg-muted/50 transition-colors ${
+          correctingIndex === index
+            ? "bg-yellow-50 ring-1 ring-inset ring-yellow-400"
+            : passenger.latitude !== undefined && passenger.longitude !== undefined
+            ? "bg-green-50/50"
+            : ""
+        }`}
+      >
+        <td className="px-3 py-2 text-xs text-muted-foreground">{passenger.codigo}</td>
+        <td className="px-3 py-2 font-medium">{passenger.name}</td>
+        <td className="px-3 py-2 text-sm max-w-[220px]">
+          <span className="block truncate" title={passenger.address}>{passenger.address}</span>
+        </td>
+        <td className="px-3 py-2">
+          {passenger.latitude !== undefined ? (
+            <span className="text-xs font-mono leading-tight block">
+              {passenger.latitude.toFixed(6)}
+              <br />
+              {passenger.longitude!.toFixed(6)}
+            </span>
+          ) : (
+            <span className="text-xs text-muted-foreground italic">Sin geocodificar</span>
+          )}
+        </td>
+        {showCorrectButton && (
+          <td className="px-3 py-2">
+            {passenger.latitude !== undefined && (
+              <Button
+                variant={correctingIndex === index ? "default" : "outline"}
+                size="sm"
+                className="h-7 text-xs gap-1"
+                title="Corregir ubicación en mapa"
+                onClick={() => setCorrectingIndex(correctingIndex === index ? null : index)}
+              >
+                <Pencil className="w-3 h-3" />
+                {correctingIndex === index ? "Cancelar" : "Corregir"}
+              </Button>
+            )}
+          </td>
+        )}
+      </tr>
+    ));
 
   return (
     <Layout>
-      {/* Confirmation Dialog */}
-      <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Confirmar Geocodificación</AlertDialogTitle>
-            <AlertDialogDescription className="space-y-4 pt-4">
-              <p>
-                Estás a punto de gastarte un buen billete. La geocodificación de{" "}
-                <strong>{passengers.length}</strong> direcciones cuesta:
-              </p>
-              <div className="flex items-center justify-center py-4">
-                <span className="text-5xl font-bold text-destructive">
-                  USD ${geocodingCost.toFixed(2)}
-                </span>
-              </div>
-              <p className="text-center font-semibold">
-                ¿A lo bien quieres proceder?
-              </p>
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancelar</AlertDialogCancel>
-            <AlertDialogAction onClick={processGeocoding} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
-              Sí, proceder
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
       <div className="container mx-auto max-w-[1800px] py-6 space-y-6">
         <Card>
           <CardHeader>
@@ -313,14 +277,16 @@ const Geocoding = () => {
           </CardHeader>
           <CardContent className="space-y-6">
             <div className="space-y-4">
-              <div>
-                <p className="text-sm text-muted-foreground mb-4">
-                  Carga un archivo Excel con las columnas: <strong>id</strong>, <strong>name</strong>, <strong>address</strong>, y <strong>city</strong>.
-                  El sistema limpiará automáticamente las direcciones y obtendrá las coordenadas (latitud y longitud) para cada dirección usando la ciudad para mayor precisión.
-                </p>
-              </div>
+              <p className="text-sm text-muted-foreground">
+                Descarga la plantilla, diligénciala y cárgala para obtener las coordenadas de cada dirección.
+              </p>
 
               <div className="flex gap-4 items-center">
+                <Button variant="outline" onClick={downloadTemplate} disabled={isProcessing}>
+                  <FileDown className="w-4 h-4 mr-2" />
+                  Descargar plantilla
+                </Button>
+
                 <label htmlFor="excel-upload-geocoding" className="cursor-pointer">
                   <Button
                     type="button"
@@ -343,9 +309,7 @@ const Geocoding = () => {
                 </label>
 
                 {file && (
-                  <span className="text-sm text-muted-foreground">
-                    {file.name}
-                  </span>
+                  <span className="text-sm text-muted-foreground">{file.name}</span>
                 )}
               </div>
 
@@ -360,10 +324,7 @@ const Geocoding = () => {
                         </span>
                       )}
                     </p>
-                    <Button
-                      onClick={handleStartGeocoding}
-                      disabled={isProcessing}
-                    >
+                    <Button onClick={handleStartGeocoding} disabled={isProcessing}>
                       {isProcessing ? (
                         <>
                           <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -382,126 +343,65 @@ const Geocoding = () => {
                     <div className="w-full bg-secondary rounded-full h-2.5">
                       <div
                         className="bg-primary h-2.5 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${(progress.current / progress.total) * 100}%`,
-                        }}
+                        style={{ width: `${(progress.current / progress.total) * 100}%` }}
                       />
                     </div>
                   )}
 
                   {passengers.some((p) => p.latitude && p.longitude) && (
-                    <Button
-                      onClick={downloadExcel}
-                      className="w-full sm:w-auto"
-                    >
+                    <Button onClick={downloadExcel} className="w-full sm:w-auto">
                       <Download className="w-4 h-4 mr-2" />
                       Descargar Excel con Coordenadas
                     </Button>
                   )}
 
-                  {/* Map and Table in a grid layout */}
+                  {/* Map — shown when there are geocoded points */}
                   {hasGeocodedPoints && (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                      <Card className="h-[600px]">
-                        <CardHeader>
-                          <CardTitle className="text-lg">Vista Previa en Mapa</CardTitle>
-                        </CardHeader>
-                        <CardContent className="p-0 h-[calc(100%-80px)]">
-                          <Map
-                            pickupPoints={mapPickupPoints}
-                            routes={[]}
-                          />
-                        </CardContent>
-                      </Card>
-
-                      <div className="border rounded-lg overflow-hidden">
-                        <div className="overflow-x-auto max-h-[600px]">
-                          <table className="w-full text-sm">
-                            <thead className="bg-muted sticky top-0">
-                              <tr>
-                                <th className="px-4 py-2 text-left font-medium">ID</th>
-                                <th className="px-4 py-2 text-left font-medium">Nombre</th>
-                                <th className="px-4 py-2 text-left font-medium">Dirección</th>
-                                <th className="px-4 py-2 text-left font-medium">Ciudad</th>
-                                <th className="px-4 py-2 text-left font-medium">Latitud</th>
-                                <th className="px-4 py-2 text-left font-medium">Longitud</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {passengers.map((passenger, index) => (
-                                <tr
-                                  key={`${passenger.id}-${index}`}
-                                  className={`border-t hover:bg-muted/50 ${
-                                    passenger.latitude !== undefined && passenger.longitude !== undefined
-                                      ? "bg-green-50/50"
-                                      : ""
-                                  }`}
-                                >
-                                  <td className="px-4 py-2">{passenger.id}</td>
-                                  <td className="px-4 py-2">{passenger.name}</td>
-                                  <td className="px-4 py-2">{passenger.address}</td>
-                                  <td className="px-4 py-2">{passenger.city}</td>
-                                  <td className="px-4 py-2">
-                                    {passenger.latitude !== undefined
-                                      ? passenger.latitude.toFixed(6)
-                                      : "-"}
-                                  </td>
-                                  <td className="px-4 py-2">
-                                    {passenger.longitude !== undefined
-                                      ? passenger.longitude.toFixed(6)
-                                      : "-"}
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                    <div className="space-y-2">
+                      {correctingPassenger && (
+                        <div className="flex items-center justify-between gap-2 rounded-md border border-yellow-400 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+                          <span>
+                            <strong>Modo corrección:</strong> haz clic en el mapa para reubicar a{" "}
+                            <strong>{correctingPassenger.name}</strong>. Presiona Escape para cancelar.
+                          </span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6 shrink-0 text-yellow-700 hover:text-yellow-900 hover:bg-yellow-100"
+                            onClick={() => setCorrectingIndex(null)}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
                         </div>
+                      )}
+                      <div ref={mapContainerRef} className="rounded-lg overflow-hidden border h-[450px]">
+                        <Map
+                          pickupPoints={mapPickupPoints}
+                          routes={[]}
+                          clickMode={correctingIndex !== null}
+                          onMapClick={handleMapClick}
+                        />
                       </div>
                     </div>
                   )}
 
-                  {/* Table only if no geocoded points yet */}
-                  {!hasGeocodedPoints && (
-                    <div className="border rounded-lg overflow-hidden">
-                      <div className="overflow-x-auto max-h-[500px]">
-                        <table className="w-full text-sm">
-                          <thead className="bg-muted sticky top-0">
-                            <tr>
-                              <th className="px-4 py-2 text-left font-medium">ID</th>
-                              <th className="px-4 py-2 text-left font-medium">Nombre</th>
-                              <th className="px-4 py-2 text-left font-medium">Dirección</th>
-                              <th className="px-4 py-2 text-left font-medium">Ciudad</th>
-                              <th className="px-4 py-2 text-left font-medium">Latitud</th>
-                              <th className="px-4 py-2 text-left font-medium">Longitud</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {passengers.map((passenger, index) => (
-                              <tr
-                                key={`${passenger.id}-${index}`}
-                                className="border-t hover:bg-muted/50"
-                              >
-                                <td className="px-4 py-2">{passenger.id}</td>
-                                <td className="px-4 py-2">{passenger.name}</td>
-                                <td className="px-4 py-2">{passenger.address}</td>
-                                <td className="px-4 py-2">{passenger.city}</td>
-                                <td className="px-4 py-2">
-                                  {passenger.latitude !== undefined
-                                    ? passenger.latitude.toFixed(6)
-                                    : "-"}
-                                </td>
-                                <td className="px-4 py-2">
-                                  {passenger.longitude !== undefined
-                                    ? passenger.longitude.toFixed(6)
-                                    : "-"}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                  {/* Table — always shown when there are passengers */}
+                  <div className="border rounded-lg overflow-hidden">
+                    <div className="overflow-y-auto max-h-[400px]">
+                      <table className="w-full text-sm">
+                        <thead className="bg-muted sticky top-0 z-10">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-medium text-xs">Documento / Código</th>
+                            <th className="px-3 py-2 text-left font-medium text-xs">Nombre</th>
+                            <th className="px-3 py-2 text-left font-medium text-xs">Dirección</th>
+                            <th className="px-3 py-2 text-left font-medium text-xs">Coordenadas</th>
+                            {hasGeocodedPoints && <th className="px-3 py-2 text-left font-medium text-xs"></th>}
+                          </tr>
+                        </thead>
+                        <tbody>{tableRows(passengers, hasGeocodedPoints)}</tbody>
+                      </table>
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </div>

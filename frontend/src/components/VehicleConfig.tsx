@@ -74,28 +74,10 @@ interface VehicleConfigProps {
   onVehicleExcelUpload?: (file: File) => void;
   routes?: any[];
   pickupPoints?: PickupPoint[];
+  className?: string;
 }
 
-const VehicleConfig = ({ onAdd, onAddMultiple, onUpdate, onDelete, onDeleteAll, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen, onVehicleExcelUpload, routes = [], pickupPoints = [] }: VehicleConfigProps) => {
-  // Debug logging
-  useEffect(() => {
-    console.log('[VehicleConfig] Props received:', {
-      vehiclesCount: vehicles.length,
-      routesCount: routes.length,
-      pickupPointsCount: pickupPoints.length,
-      pickupPointsWithGrupo: pickupPoints.filter(p => p.grupo).length
-    });
-    if (routes.length > 0) {
-      console.log('[VehicleConfig] Sample route structure:', {
-        route0: {
-          vehicle_id: routes[0]?.vehicle_id,
-          route_data_id: routes[0]?.route_data?.id,
-          has_route: !!routes[0]?.route_data?.route,
-          route_stops_count: routes[0]?.route_data?.route?.length || 0
-        }
-      });
-    }
-  }, [routes, vehicles, pickupPoints]);
+const VehicleConfig = ({ onAdd, onAddMultiple, onUpdate, onDelete, onDeleteAll, vehicles, onMapClickMode, onLocationUpdate, isDialogOpen, setIsDialogOpen, onVehicleExcelUpload, routes = [], pickupPoints = [], className }: VehicleConfigProps) => {
   const [configMode, setConfigMode] = useState<"select" | "registered" | "quick">(
     vehicles.length > 0 ? "registered" : "select"
   );
@@ -451,7 +433,7 @@ const VehicleConfig = ({ onAdd, onAddMultiple, onUpdate, onDelete, onDeleteAll, 
 
   return (
     <>
-      <Card>
+      <Card className={className}>
         <CardHeader>
           <CardTitle className="flex items-center justify-between gap-2">
             <span className="flex items-center gap-2">
@@ -689,7 +671,7 @@ const VehicleConfig = ({ onAdd, onAddMultiple, onUpdate, onDelete, onDeleteAll, 
             </div>
           )}
 
-          {vehicles.length > 0 ? (
+          {configMode !== "select" && vehicles.length > 0 ? (
             <div className="space-y-2 max-h-[400px] overflow-y-auto">
               {vehicles.map((vehicle, idx) => {
                 // Extract grupos for this vehicle from routes
@@ -785,34 +767,6 @@ const VehicleConfig = ({ onAdd, onAddMultiple, onUpdate, onDelete, onDeleteAll, 
                            (route.route_data?.id && route.route_data.id === `vehicle-${vehicles.indexOf(vehicle)}`);
                   });
                   
-                  if (matchingRoutes.length === 0 && displayGrupos.length === 0) {
-                    // Log when no routes match at all
-                    console.warn(`[VehicleConfig] Vehicle ${vehicle.name} (ID: ${vehicle.id}, index: ${idx}) - No matching routes found.`, {
-                      totalRoutes: routes.length,
-                      routeVehicleIds: routes.map((r: any, i: number) => ({
-                        index: i,
-                        vehicle_id: r.vehicle_id,
-                        route_data_id: r.route_data?.id
-                      })),
-                      vehicleId: vehicle.id
-                    });
-                  } else if (matchingRoutes.length > 0 && displayGrupos.length === 0) {
-                    // Log when routes match but no grupos found
-                    const firstRoute = matchingRoutes[0];
-                    const stopsWithGrupo = (firstRoute.route_data?.route || []).filter((stop: any) => {
-                      const stopId = stop.stop?.id;
-                      if (!stopId || stopId.includes("-start") || stopId.includes("-end")) return false;
-                      const idx = stopId.indexOf('__person_');
-                      const originalPointId = idx > -1 ? stopId.substring(0, idx) : stopId;
-                      const point = pickupPoints.find(p => p.id === originalPointId);
-                      return !!point?.grupo;
-                    });
-                    console.warn(`[VehicleConfig] Vehicle ${vehicle.name} (ID: ${vehicle.id}) - ${matchingRoutes.length} matching route(s) but no grupos found.`, {
-                      stopsCount: firstRoute.route_data?.route?.length || 0,
-                      stopsWithGrupoCount: stopsWithGrupo.length,
-                      sampleStopIds: (firstRoute.route_data?.route || []).slice(0, 3).map((s: any) => s.stop?.id)
-                    });
-                  }
                 }
                 
                 return (

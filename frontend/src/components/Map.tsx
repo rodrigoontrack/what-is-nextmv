@@ -61,7 +61,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
       style: "mapbox://styles/mapbox/streets-v12",
-      center: initialCenter ?? [-99.1332, 19.4326],
+      center: initialCenter ?? [-74.0721, 4.7110],
       zoom: 11,
     });
 
@@ -914,7 +914,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       }
       
       if (hasBounds) {
-        map.current!.fitBounds(bounds, { padding: 50 });
+        map.current!.fitBounds(bounds, { padding: 50, maxZoom: 14 });
       }
     }
     // NOTE: visibleRoutes and selectedRouteIndex are intentionally NOT in dependencies - we only update visibility/zoom via separate useEffects below

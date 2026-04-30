@@ -13,6 +13,7 @@ import routeSchedulesRouter from "./routes/routeSchedules";
 import routeScheduleVehiclesRouter from "./routes/routeScheduleVehicles";
 import busStopsRouter from "./routes/busStops";
 import organizationsRouter from "./routes/organizations";
+import routeScheduleTrackablesRouter from "./routes/routeScheduleTrackables";
 
 dotenv.config();
 
@@ -33,6 +34,7 @@ app.use("/api/route-schedules", routeSchedulesRouter);
 app.use("/api/route-schedule-vehicles", routeScheduleVehiclesRouter);
 app.use("/api/bus-stops", busStopsRouter);
 app.use("/api/organizations", organizationsRouter);
+app.use("/api/route-schedule-trackables", routeScheduleTrackablesRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });

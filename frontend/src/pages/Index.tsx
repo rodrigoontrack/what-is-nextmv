@@ -1,14 +1,14 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { getPickupPoints, createPickupPoint, updatePickupPoint, deletePickupPoint, getOptimizations, getOptimization, createOptimization, getRoutesByOptimization, createRoute, createStop, createVehicleOptimization, createRouteRecord, createSchedule, createRouteSchedule, createRouteScheduleVehicle, createBusStop, getOrganization, getVehicleByPlate, getVehiclesByOrganization } from "@/lib/api";
+import { getPickupPoints, createPickupPoint, updatePickupPoint, deletePickupPoint, getOptimizations, getOptimization, createOptimization, getRoutesByOptimization, createRoute, createStop, createVehicleOptimization, createRouteRecord, createSchedule, createRouteSchedule, createRouteScheduleVehicle, createBusStop, createRouteScheduleTrackable, getOrganization, getVehicleByPlate, getVehiclesByOrganization } from "@/lib/api";
 import Map from "@/components/Map";
 import PickupPointForm from "@/components/PickupPointForm";
 import VehicleConfig from "@/components/VehicleConfig";
 import PickupPointsList from "@/components/PickupPointsList";
 import Layout from "@/components/Layout";
-import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Pencil, Settings, Menu, ZoomIn } from "lucide-react";
+import { Play, MapPin, Truck, Route, MousePointerClick, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Code, ArrowLeft, Plus, History, X, Upload, Trash2, Download, Pencil, Settings, Menu, ArrowRightLeft, RefreshCw, Check, GripVertical } from "lucide-react";
 import * as XLSX from "xlsx";
 import { Loader2 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -34,6 +34,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import TourTooltip, { type TourStep } from "@/components/TourTooltip";
 
 interface PickupPoint {
   id: string;
@@ -97,8 +98,16 @@ const Index = () => {
   const [isVehicleDialogOpen, setIsVehicleDialogOpen] = useState(false);
   const [isDeleteAllPointsDialogOpen, setIsDeleteAllPointsDialogOpen] = useState(false);
   const [visibleRoutes, setVisibleRoutes] = useState<Set<number>>(new Set());
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [tourActive, setTourActive] = useState(false);
+  const [settingsPanelWidth, setSettingsPanelWidth] = useState(500);
+  const isResizingSettings = useRef(false);
+  const resizeStartX = useRef(0);
+  const resizeStartWidth = useRef(0);
   const [showReplaceResultsDialog, setShowReplaceResultsDialog] = useState(false);
+  const [showClearOptimizationDialog, setShowClearOptimizationDialog] = useState(false);
+  const [showReoptimizeDialog, setShowReoptimizeDialog] = useState(false);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState<number | null>(null);
   const [focusLocation, setFocusLocation] = useState<{ lon: number; lat: number } | null>(null);
   const [zoomToRoute, setZoomToRoute] = useState<number | null>(null);
@@ -121,6 +130,22 @@ const Index = () => {
   const [routeFormCode, setRouteFormCode] = useState('');
   const [routeFormType, setRouteFormType] = useState(0);
   const [routeFormCategory, setRouteFormCategory] = useState(0);
+  const [moveStopDialogData, setMoveStopDialogData] = useState<{
+    stopId: string;
+    stopName: string;
+    fromRouteIdx: number;
+    passengers: Array<{ id: string; name: string; code: string | null }>;
+  } | null>(null);
+  const [stopToRouteOverride, setStopToRouteOverride] = useState<Record<string, number>>({});
+  const [pendingMoves, setPendingMoves] = useState(false);
+  const [selectedPassengerIndices, setSelectedPassengerIndices] = useState<Set<number>>(new Set());
+  const [confirmMoveToRoute, setConfirmMoveToRoute] = useState<{
+    routeIdx: number;
+    vehicleName: string;
+    currentCount: number;
+    newCount: number;
+    capacity: number;
+  } | null>(null);
   const [scheduleFormName, setScheduleFormName] = useState('');
   const [scheduleFormDays, setScheduleFormDays] = useState({ monday: false, tuesday: false, wednesday: false, thursday: false, friday: false, saturday: false, sunday: false });
   const [scheduleFormStartTime, setScheduleFormStartTime] = useState('');
@@ -154,6 +179,15 @@ const Index = () => {
     // If we have person_ids, return count, otherwise return 0
     return personIds.size > 0 ? personIds.size : 0;
   }, [pickupPoints]);
+
+  const suggestedDuration = useMemo(() => {
+    const n = pickupPoints.length;
+    if (n <= 10) return "10s";
+    if (n <= 25) return "30s";
+    if (n <= 50) return "1m";
+    if (n <= 100) return "2m";
+    return "5m";
+  }, [pickupPoints.length]);
 
   // Helper function to get valid route count (routes with duration > 0, one per vehicle)
   const getValidRouteCount = useMemo(() => {
@@ -195,6 +229,28 @@ const Index = () => {
     RIO: [-43.1729, -22.9068], // Rio de Janeiro
     MAD: [-3.7038, 40.4168],   // Madrid
   };
+
+  useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizingSettings.current) return;
+      const delta = e.clientX - resizeStartX.current;
+      const newWidth = Math.max(320, Math.min(900, resizeStartWidth.current + delta));
+      setSettingsPanelWidth(newWidth);
+    };
+    const handleMouseUp = () => {
+      if (isResizingSettings.current) {
+        isResizingSettings.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    };
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
 
   // Restore session from localStorage on mount
   useEffect(() => {
@@ -266,7 +322,6 @@ const Index = () => {
         result_json: opt.optimization_result,
       }));
       setRuns(runsList);
-      console.log(`Loaded ${runsList.length} optimizations from API`);
     } catch (error) {
       console.error("Error loading optimizations:", error);
       toast({
@@ -320,7 +375,6 @@ const Index = () => {
         };
       });
 
-      console.log(`✅ Loaded ${transformedRoutes.length} routes from API`);
       setRoutes(transformedRoutes);
       setVisibleRoutes(new Set(transformedRoutes.map((_: any, index: number) => index)));
 
@@ -470,14 +524,6 @@ const Index = () => {
                     return response.json();
                   })
                   .then(data => {
-                    console.log(`Mapbox response for vehicle ${vehicle.id || vehicleIndex}:`, {
-                      code: data.code,
-                      hasRoutes: !!(data.routes && data.routes.length > 0),
-                      hasGeometry: !!(data.routes && data.routes[0] && data.routes[0].geometry),
-                      geometryType: data.routes?.[0]?.geometry?.type,
-                      coordCount: data.routes?.[0]?.geometry?.coordinates?.length
-                    });
-                    
                     if (data.code === 'Ok' && data.routes && data.routes.length > 0 && data.routes[0].geometry) {
                       const geometry = data.routes[0].geometry;
                       // Ensure we have valid coordinates
@@ -544,15 +590,7 @@ const Index = () => {
       });
 
       // Wait for all Mapbox route fetches to complete
-      console.log(`Waiting for ${routePromises.length} Mapbox route fetches...`);
       const routeData = await Promise.all(routePromises);
-      console.log(`Completed ${routeData.length} route fetches. Results:`, routeData.map(r => ({
-        solution: r.solutionIndex,
-        vehicle: r.vehicleIndex,
-        hasGeometry: !!r.geometry,
-        coordCount: r.geometry?.coordinates?.length || 0,
-        geometryType: r.geometry?.type
-      })));
 
       // Helper functions to extract person_id (same as Excel export)
       const extractPersonIdFromStopId = (stopId: string): string | undefined => {
@@ -589,14 +627,6 @@ const Index = () => {
           const routeInfo = routeData.find(r => r.solutionIndex === solutionIndex && r.vehicleIndex === vehicleIndex);
           const styleId = `route-${solutionIndex}-${vehicleIndex}`;
           
-          // Debug: Log route info
-          console.log(`Processing vehicle ${vehicle.id || vehicleIndex} (solution ${solutionIndex}, vehicle ${vehicleIndex}):`, {
-            hasRouteInfo: !!routeInfo,
-            hasGeometry: !!(routeInfo?.geometry),
-            coordCount: routeInfo?.geometry?.coordinates?.length || 0,
-            geometryType: routeInfo?.geometry?.type
-          });
-          
           // Create folder for this vehicle route with plate
           kml += `    <Folder>
       <name>${vehiclePlate} - Solución ${solutionIndex + 1}</name>
@@ -607,8 +637,6 @@ const Index = () => {
           if (routeInfo && routeInfo.geometry && routeInfo.geometry.coordinates && Array.isArray(routeInfo.geometry.coordinates) && routeInfo.geometry.coordinates.length > 0) {
             // Convert GeoJSON coordinates (lon,lat) to KML format (lon,lat,altitude)
             const geoJsonCoords = routeInfo.geometry.coordinates;
-            console.log(`Using Mapbox geometry for vehicle ${vehicle.id || vehicleIndex}: ${geoJsonCoords.length} coordinates, first:`, geoJsonCoords[0]);
-            
             const kmlCoordinates = geoJsonCoords
               .map((coord: number[]) => {
                 // Handle both [lon, lat] and [lon, lat, elevation] formats
@@ -659,7 +687,6 @@ const Index = () => {
 
           // Create placemarks for each stop (always create these, regardless of route type)
           if (route && route.length > 0) {
-            console.log(`Creating ${route.length} stop placemarks for vehicle ${vehicle.id || vehicleIndex}`);
             route.forEach((routeStop: any, stopIndex: number) => {
               const stop = routeStop.stop || {};
               const location = stop.location;
@@ -771,10 +798,6 @@ const Index = () => {
   };
 
   const handleExportToExcel = () => {
-    console.log("=== EXCEL EXPORT STARTED ===");
-    console.log("Routes count:", routes.length);
-    console.log("Routes data:", routes);
-    
     if (routes.length === 0) {
       toast({
         title: "Error",
@@ -787,7 +810,6 @@ const Index = () => {
     try {
       // Create a new workbook
       const workbook = XLSX.utils.book_new();
-      console.log("Workbook created");
 
       // Helper function to get vehicle name
       const getVehicleName = (route: any, routeIndex: number): string => {
@@ -874,13 +896,9 @@ const Index = () => {
       // ===== CREATE A TAB FOR EACH ROUTE =====
       routes.forEach((route: any, routeIndex: number) => {
         try {
-          console.log(`Processing route ${routeIndex}:`, route);
-          
           const routeName = getVehicleName(route, routeIndex);
           const stops = getStopsWithDetails(route);
-          
-          console.log(`Route ${routeIndex} (${routeName}): ${stops.length} stops`);
-          
+
           // Get route distance and duration
           const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
           const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
@@ -935,14 +953,11 @@ const Index = () => {
           // Limit sheet name to 31 characters (Excel limit)
           const sheetName = routeName.length > 31 ? routeName.substring(0, 31) : routeName;
           XLSX.utils.book_append_sheet(workbook, routeSheet, sheetName);
-          console.log(`Added sheet: ${sheetName} with ${routeData.length} rows`);
         } catch (routeError) {
           console.error(`Error processing route ${routeIndex}:`, routeError);
           // Continue with other routes even if one fails
         }
       });
-      
-      console.log(`Total sheets created: ${workbook.SheetNames.length}`);
 
       // Check if workbook has any sheets
       if (workbook.SheetNames.length === 0) {
@@ -959,12 +974,8 @@ const Index = () => {
       const timestamp = new Date().toISOString().split('T')[0];
       const filename = `optimizacion_${selectedRunId || timestamp}_${timestamp}.xlsx`;
 
-      console.log(`Writing Excel file: ${filename} with ${workbook.SheetNames.length} sheets`);
-
       // Write the file
       XLSX.writeFile(workbook, filename);
-
-      console.log("Excel file written successfully");
 
       toast({
         title: "Exportación exitosa",
@@ -989,7 +1000,6 @@ const Index = () => {
         name: point.address || `${point.latitude}, ${point.longitude}`,
         quantity: point.quantity != null && !isNaN(point.quantity) ? Number(point.quantity) : 1,
       }));
-      console.log(`=== PUNTOS CARGADOS DESDE API: ${normalizedData.length} ===`);
       setPickupPoints(normalizedData);
     } catch (error) {
       console.error("Error loading pickup points:", error);
@@ -1022,8 +1032,10 @@ const Index = () => {
           ...editingPickupPoint,
           ...updated,
           id: String(updated.id),
-          name: updated.address || `${updated.latitude}, ${updated.longitude}`,
+          name: editingPickupPoint.name,
           quantity,
+          all_nombres: point.all_nombres || editingPickupPoint.all_nombres,
+          person_id: point.person_id || editingPickupPoint.person_id,
         };
         setPickupPoints(pickupPoints.map((p) => (p.id === editingPickupPoint.id ? updatedPoint : p)));
       } catch (error) {
@@ -1046,8 +1058,10 @@ const Index = () => {
         const newPoint: PickupPoint = {
           ...created,
           id: String(created.id),
-          name: created.address || `${created.latitude}, ${created.longitude}`,
+          name: `Punto ${pickupPoints.length + 1}`,
           quantity,
+          all_nombres: insertData.all_nombres,
+          person_id: insertData.person_id,
         };
         setPickupPoints([...pickupPoints, newPoint]);
       } catch (error) {
@@ -1102,7 +1116,7 @@ const Index = () => {
 
   const handleDownloadPickupPointTemplate = () => {
     const data = [
-      ["nombre", "direccion", "latitud", "longitud", "cedula", "grupo"],
+      ["nombre", "direccion", "latitud", "longitud", "codigo"],
     ];
     const ws = XLSX.utils.aoa_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -1111,11 +1125,11 @@ const Index = () => {
   };
 
   const handleExcelUpload = async (file: File) => {
+    setIsUploadingFile(true);
     try {
       // First, delete all existing pickup points
       await Promise.all(pickupPoints.map((p) => deletePickupPoint(Number(p.id)).catch(() => {})));
       setPickupPoints([]);
-      console.log("Puntos existentes eliminados");
 
       // Dynamically import xlsx library
       // @ts-ignore - xlsx types may not be available until package is installed
@@ -1190,10 +1204,12 @@ const Index = () => {
         key => {
           const normalized = key.toLowerCase().trim();
           return normalized === "cedula" || normalized === "cédula" ||
+                 normalized === "codigo" || normalized === "código" ||
                  normalized === "persona id" || normalized === "persona_id" ||
                  normalized === "person id" || normalized === "person_id" ||
                  normalized === "id persona" || normalized === "id_persona" ||
                  normalized.includes("cedula") || normalized.includes("cédula") ||
+                 normalized.includes("codigo") || normalized.includes("código") ||
                  normalized.includes("persona") && normalized.includes("id");
         }
       );
@@ -1226,9 +1242,6 @@ const Index = () => {
         });
         return;
       }
-
-      console.log("Columnas detectadas:", { latitudeKey, longitudeKey, quantityKey: quantityKey || "no encontrada", personIdKey: personIdKey || "no encontrada", grupoKey: grupoKey || "no encontrada", nombreKey: nombreKey || "no encontrada", direccionKey: direccionKey || "no encontrada" });
-      console.log(`Total de filas en Excel: ${jsonData.length}`);
 
       // STEP 1: Read and process ALL rows first, counting occurrences
       let processedRows = 0;
@@ -1302,7 +1315,6 @@ const Index = () => {
         
         if (occurrenceMap[key]) {
           // Increment count for duplicate coordinates
-          const oldCount = occurrenceMap[key].count;
           occurrenceMap[key].count += 1;
           occurrenceMap[key].occurrences.push(occurrenceMap[key].count);
           // Add person_id if available and not already in the list
@@ -1322,7 +1334,6 @@ const Index = () => {
             occurrenceMap[key].direccion = direccion;
           }
           processedRows++;
-          console.log(`[DUPLICADO ENCONTRADO] Clave: ${key}, Cantidad anterior: ${oldCount}, Cantidad nueva: ${occurrenceMap[key].count}`);
         } else {
           // First time seeing these coordinates
           occurrenceMap[key] = {
@@ -1336,34 +1347,9 @@ const Index = () => {
             direccion: direccion || undefined, // Store direccion if available
           };
           processedRows++;
-          if (processedRows <= 5 || processedRows % 100 === 0) {
-            console.log(`[NUEVO PUNTO ${processedRows}] Clave: ${key}, Cantidad inicial: 1`);
-          }
         }
       }
-      
-      console.log(`Resumen de procesamiento de filas: ${processedRows} procesadas, ${skippedRows} omitidas`);
-      if (skippedRows > 0) {
-        console.log(`⚠️ ${skippedRows} filas fueron omitidas (coordenadas inválidas o fuera de Colombia)`);
-      }
-      console.log(`Total de coordenadas únicas encontradas (solo Colombia): ${Object.keys(occurrenceMap).length}`);
-      
-      // Check for points with count > 1 BEFORE converting
-      const pointsWithCountGreaterThanOne = Object.entries(occurrenceMap).filter(([key, item]) => item.count > 1);
-      console.log(`=== PUNTOS CON MÚLTIPLES APARICIONES: ${pointsWithCountGreaterThanOne.length} ===`);
-      if (pointsWithCountGreaterThanOne.length > 0) {
-        console.log("Primeros 10 puntos con cantidad > 1:");
-        pointsWithCountGreaterThanOne.slice(0, 10).forEach(([key, item]) => {
-          console.log(`  - ${key}: cantidad=${item.count}`);
-        });
-      } else {
-        console.warn("⚠️ NO SE ENCONTRARON PUNTOS DUPLICADOS - Todas las coordenadas son únicas");
-        console.log("Muestra de primeras 10 coordenadas procesadas:");
-        Object.entries(occurrenceMap).slice(0, 10).forEach(([key, item]) => {
-          console.log(`  - ${key}: cantidad=${item.count}`);
-        });
-      }
-      
+
       // STEP 2: Convert occurrence map to consolidated points with quantities
       const uniquePoints: PointData[] = Object.values(occurrenceMap).map((item) => ({
         latitude: item.latitude,
@@ -1378,55 +1364,6 @@ const Index = () => {
           : undefined, // Store single nombre or comma-separated if multiple
         direccion: item.direccion, // Store direccion if available
       }));
-      
-      // Verify quantities are being set correctly
-      const pointsWithQtyGreaterThanOne = uniquePoints.filter(p => p.quantity > 1);
-      console.log(`Puntos únicos con quantity > 1: ${pointsWithQtyGreaterThanOne.length}`);
-      if (pointsWithQtyGreaterThanOne.length > 0) {
-        console.log("Ejemplos de puntos con quantity > 1:", pointsWithQtyGreaterThanOne.slice(0, 5).map(p => ({
-          lat: p.latitude,
-          lon: p.longitude,
-          quantity: p.quantity
-        })));
-      }
-      
-      // Log detailed consolidation info
-      console.log("=== CONSOLIDACIÓN DE PUNTOS ===");
-      const consolidatedPointsList: Array<{key: string, item: any}> = [];
-      Object.entries(occurrenceMap).forEach(([key, item]) => {
-        if (item.count > 1) {
-          consolidatedPointsList.push({key, item});
-          console.log(`✓ Coordenadas ${key}:`);
-          console.log(`  - Lat: ${item.latitude}, Lon: ${item.longitude}`);
-          console.log(`  - Apariciones: ${item.count}`);
-          console.log(`  - Cantidad consolidada: ${item.count}`);
-        }
-      });
-      
-      if (consolidatedPointsList.length === 0) {
-        console.warn("⚠️ ADVERTENCIA: No se encontraron puntos duplicados. Verificando todas las coordenadas...");
-        console.log("Todas las coordenadas procesadas:", Object.entries(occurrenceMap).map(([key, item]) => ({
-          key,
-          lat: item.latitude,
-          lon: item.longitude,
-          count: item.count
-        })));
-      }
-      
-      console.log("=== RESUMEN FINAL ===");
-      console.log(`Total filas en Excel: ${jsonData.length}`);
-      console.log(`Puntos únicos después de consolidar: ${uniquePoints.length}`);
-      console.log(`Puntos consolidados (con cantidad > 1): ${uniquePoints.filter(p => p.quantity > 1).length}`);
-      console.log(`Detalle de TODAS las cantidades:`, uniquePoints.map(p => ({
-        coords: `${p.latitude}, ${p.longitude}`,
-        quantity: p.quantity
-      })));
-      
-      // Show sample of first few points to verify
-      console.log("=== MUESTRA DE PRIMEROS PUNTOS ===");
-      uniquePoints.slice(0, 10).forEach((p, idx) => {
-        console.log(`Punto ${idx + 1}: Lat=${p.latitude}, Lon=${p.longitude}, Cantidad=${p.quantity}`);
-      });
       
       if (uniquePoints.length === 0) {
         toast({
@@ -1456,17 +1393,6 @@ const Index = () => {
         // Use direccion for address if available, otherwise use coordinates
         const address = point.direccion || `${lat}, ${lon}`;
         
-        // Log passenger data for debugging
-        if (nombres.length > 0 || point.person_id) {
-          console.log(`📋 Point ${index + 1} (${lat}, ${lon}):`, {
-            quantity,
-            nombres: nombres.length,
-            nombres_list: nombres,
-            person_id: point.person_id,
-            has_all_nombres: nombres.length > 0
-          });
-        }
-        
         return {
           name: name,
           address: address,
@@ -1486,20 +1412,6 @@ const Index = () => {
       const uniquePointsCount = uniquePoints.length;
       const consolidatedCount = totalRows - uniquePointsCount;
       const pointsWithMultipleOccurrences = uniquePoints.filter(p => p.quantity > 1).length;
-      
-      // Show detailed summary in console
-      console.log("=== PUNTOS A INSERTAR ===");
-      pointsToInsert.forEach((p, idx) => {
-        if (p.quantity > 1) {
-          console.log(`Punto ${idx + 1}: ${p.latitude}, ${p.longitude} - Cantidad: ${p.quantity} (consolidado)`);
-        }
-      });
-      
-      console.log("=== ESTADÍSTICAS FINALES ===");
-      console.log(`Total filas procesadas: ${processedRows}`);
-      console.log(`Puntos únicos: ${uniquePointsCount}`);
-      console.log(`Puntos con múltiples apariciones: ${pointsWithMultipleOccurrences}`);
-      console.log(`Total consolidaciones: ${consolidatedCount}`);
 
       // Batch insert ALL points at once
       if (pointsToInsert.length === 0) {
@@ -1541,29 +1453,9 @@ const Index = () => {
           grupo: pointData.grupo, // Keep grupo for localStorage
         };
         
-        if (quantity > 1) {
-          console.log(`🔵 PUNTO CON CANTIDAD > 1: ${pointData.name} - Lat: ${lat}, Lon: ${lon}, Cantidad: ${quantity}`);
-        }
-        
         return baseData;
       });
 
-      // Log what we're about to insert
-      console.log("=== ANTES DE INSERTAR ===");
-      console.log(`Total puntos a insertar: ${allDataToInsert.length}`);
-      const pointsWithQty = allDataToInsert.filter(p => p.quantity > 1);
-      console.log(`Puntos con cantidad > 1: ${pointsWithQty.length}`);
-      if (pointsWithQty.length > 0) {
-        console.log("Ejemplos de puntos con cantidad > 1:", pointsWithQty.slice(0, 5).map(p => ({
-          name: p.name,
-          lat: p.latitude,
-          lon: p.longitude,
-          quantity: p.quantity
-        })));
-      } else {
-        console.warn("⚠️ ADVERTENCIA: No hay puntos con cantidad > 1 para insertar");
-      }
-      
       // Save to localStorage (works without Supabase)
       const pointsWithIds = allDataToInsert.map((point, index) => ({
         ...point,
@@ -1572,44 +1464,9 @@ const Index = () => {
         updated_at: new Date().toISOString(),
       }));
       
-      // Log passenger data being saved
-      const pointsWithPassengers = pointsWithIds.filter(p => p.all_nombres && p.all_nombres.length > 0);
-      console.log("=== VERIFICACIÓN DE DATOS DE PASAJEROS ===");
-      console.log(`Puntos con all_nombres: ${pointsWithPassengers.length}`);
-      if (pointsWithPassengers.length > 0) {
-        console.log("Ejemplos de puntos con all_nombres guardados:", pointsWithPassengers.slice(0, 5).map(p => ({
-          name: p.name,
-          quantity: p.quantity,
-          all_nombres: p.all_nombres,
-          person_id: p.person_id
-        })));
-      } else {
-        console.warn("⚠️ ADVERTENCIA: No se encontraron puntos con all_nombres para guardar");
-        // Show first few points to debug
-        console.log("Primeros 5 puntos guardados:", pointsWithIds.slice(0, 5).map(p => ({
-          name: p.name,
-          quantity: p.quantity,
-          has_all_nombres: !!p.all_nombres,
-          all_nombres: p.all_nombres
-        })));
-      }
-      
       // Save to localStorage
       localStorage.setItem('pickup_points', JSON.stringify(pointsWithIds));
-      console.log("=== PUNTOS GUARDADOS EN LOCALSTORAGE ===");
-      console.log(`Total puntos guardados: ${pointsWithIds.length}`);
-      const pointsWithQtySaved = pointsWithIds.filter(p => p.quantity > 1);
-      console.log(`Puntos con cantidad > 1: ${pointsWithQtySaved.length}`);
-      
-      if (pointsWithQtySaved.length > 0) {
-        console.log("✅ Puntos guardados con cantidad > 1:", pointsWithQtySaved.slice(0, 5).map(p => ({
-          name: p.name,
-          quantity: p.quantity,
-          has_all_nombres: !!p.all_nombres,
-          all_nombres_count: p.all_nombres?.length || 0
-        })));
-      }
-      
+
       // Try Supabase if available (optional)
       let insertedData: any[] | null = null;
       let insertError: any = null;
@@ -1621,11 +1478,10 @@ const Index = () => {
           longitude: p.longitude,
           address: p.address,
           quantity: p.quantity,
-        }).catch((err: any) => { console.warn("Error inserting point:", err); return null; }))
+        }).catch((err: any) => { console.error("Error inserting point:", err); return null; }))
       );
       insertedData = insertedResults.filter(Boolean);
       const insertedCount = insertedData?.length || 0;
-      console.log(`✅ Insertados en MySQL: ${insertedCount}`);
 
       // Merge DB response with local passenger data (all_nombres, person_id, name)
       // DB doesn't store these fields, so we keep them from the local data
@@ -1659,22 +1515,10 @@ const Index = () => {
         : ` (${totalRows} filas procesadas)`;
       
         toast({
-          title: "Archivo cargado exitosamente",
-        description: `Se agregaron ${insertedCount} puntos de recogida${consolidationMessage}`,
+        title: "Archivo cargado",
+        description: `Se cargaron ${insertedCount} punto${insertedCount !== 1 ? "s" : ""} de recogida${consolidatedCount > 0 ? `. ${consolidatedCount} direcciones repetidas fueron consolidadas.` : "."}`,
       });
-      
-      // Log final summary
-      console.log("=== INSERCIÓN COMPLETADA ===");
-      console.log(`Puntos insertados: ${insertedCount}`);
-      const pointsWithQuantity = pointsToInsert.filter(p => p.quantity > 1);
-      if (pointsWithQuantity.length > 0) {
-        console.log(`Puntos con cantidad consolidada (quantity > 1):`, pointsWithQuantity.map(p => ({
-          coords: `${p.latitude}, ${p.longitude}`,
-          quantity: p.quantity
-        })));
-      } else {
-        console.log("No se encontraron puntos con cantidad > 1 (todos los puntos aparecieron solo una vez)");
-      }
+
     } catch (error) {
       console.error("Error processing Excel file:", error);
       const errorMessage = error instanceof Error ? error.message : "Error desconocido";
@@ -1692,6 +1536,8 @@ const Index = () => {
           variant: "destructive",
         });
       }
+    } finally {
+      setIsUploadingFile(false);
     }
   };
 
@@ -1736,12 +1582,6 @@ const Index = () => {
       // Read everything as arrays of arrays (header: 1) to avoid key mismatch
       const allRawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" }) as any[][];
 
-      console.log("=== VEHICLE EXCEL UPLOAD ===");
-      console.log("Total raw rows (including header):", allRawRows.length);
-      console.log("Raw row 0 (header):", allRawRows[0]);
-      console.log("Raw row 1 (first data):", allRawRows[1]);
-      console.log("All raw rows:", JSON.stringify(allRawRows));
-
       if (!allRawRows || allRawRows.length < 2) {
         console.error("Not enough rows. allRawRows.length:", allRawRows?.length);
         toast({
@@ -1756,13 +1596,8 @@ const Index = () => {
       const headers: string[] = allRawRows[0].map((h: any) => String(h ?? "").toLowerCase().trim());
       const dataRows = allRawRows.slice(1).filter(row => row.some((cell: any) => String(cell ?? "").trim() !== ""));
 
-      console.log("Normalized headers:", headers);
-      console.log("Data rows after filtering empty:", dataRows.length);
-      dataRows.forEach((row, i) => console.log(`Data row ${i}:`, row));
-
       const findIdx = (matchers: string[]) => {
         const idx = headers.findIndex(h => matchers.some(m => h === m || h.includes(m)));
-        console.log(`findIdx(${matchers}) => ${idx} (header: "${headers[idx]}")`);
         return idx;
       };
 
@@ -1797,16 +1632,12 @@ const Index = () => {
         const distanciaMax = (!isNaN(distanciaRaw) && distanciaRaw > 0) ? distanciaRaw : undefined;
         const grupo = grupoIdx !== -1 ? String(row[grupoIdx] ?? "").trim() : undefined;
 
-        console.log("Processing row:", { placa, capacidad, distanciaMax, grupo, rawRow: row });
-
         if (!placa || isNaN(capacidad)) {
-          console.warn("SKIPPED - invalid data:", { placa, capacidad, isNaN_cap: isNaN(capacidad) });
           skippedCount++;
           continue;
         }
 
         if (capacidad <= 0) {
-          console.warn("SKIPPED - non-positive capacity:", { placa, capacidad });
           skippedCount++;
           continue;
         }
@@ -1925,12 +1756,9 @@ const Index = () => {
     if (!clickMode) return;
 
     try {
-      // Generate a temporary name based on coordinates
-      const pointName = `Point ${pickupPoints.length + 1}`;
       const address = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
 
       await handleAddPickupPoint({
-        name: pointName,
         address: address,
         latitude: lat,
         longitude: lng,
@@ -1938,8 +1766,8 @@ const Index = () => {
       });
 
       toast({
-        title: "Point added",
-        description: `Added pickup point at ${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+        title: "Punto agregado",
+        description: `Punto agregado en ${lat.toFixed(4)}, ${lng.toFixed(4)}. Edítalo para agregar el nombre del pasajero.`,
       });
     } catch (error) {
       console.error("Error adding point from map click:", error);
@@ -2016,8 +1844,108 @@ const Index = () => {
     toast({ title: "Vehículos eliminados", description: `Se eliminaron ${vehiclesCount} vehículos exitosamente` });
   };
 
+  const moveStop = (stopId: string, fromRouteIdx: number, toRouteIdx: number, chosenIndices: number[]) => {
+    const sourcePoint = pickupPoints.find(p => p.id === stopId);
+    const totalQty = sourcePoint?.quantity || 1;
+    const isPartial = chosenIndices.length < totalQty;
+
+    if (isPartial && sourcePoint) {
+      const allNames = sourcePoint.all_nombres || [];
+      const movedNames = chosenIndices.map(i => allNames[i]).filter(Boolean);
+      const remainingNames = allNames.filter((_, i) => !chosenIndices.includes(i));
+      const movedCount = chosenIndices.length;
+      const remainingCount = totalQty - movedCount;
+
+      const newPointId = `${stopId}-split-${Date.now()}`;
+      const newPoint: PickupPoint = {
+        id: newPointId,
+        name: sourcePoint.name,
+        address: sourcePoint.address,
+        latitude: sourcePoint.latitude,
+        longitude: sourcePoint.longitude,
+        quantity: movedCount,
+        all_nombres: movedNames,
+      };
+
+      if (remainingCount > 0) {
+        setPickupPoints(prev => [
+          ...prev.map(p => p.id === stopId ? { ...p, quantity: remainingCount, all_nombres: remainingNames } : p),
+          newPoint,
+        ]);
+      } else {
+        setPickupPoints(prev => [...prev.filter(p => p.id !== stopId), newPoint]);
+      }
+
+      setRoutes(prev => {
+        const newRoutes = prev.map(r => ({
+          ...r,
+          route_data: { ...r.route_data, route: [...(r.route_data?.route || [])] }
+        }));
+        const fromStops = newRoutes[fromRouteIdx].route_data.route;
+        const srcIdx = fromStops.findIndex((s: any) => {
+          const sid = s.stop?.id || '';
+          const oid = sid.indexOf('__person_') > -1 ? sid.substring(0, sid.indexOf('__person_')) : sid;
+          return oid === stopId;
+        });
+        if (srcIdx === -1) return prev;
+        const sourceStop = fromStops[srcIdx];
+        if (remainingCount <= 0) fromStops.splice(srcIdx, 1);
+        const newStop = { stop: { id: newPointId, location: sourceStop.stop?.location } };
+        const toStops = newRoutes[toRouteIdx].route_data.route;
+        const endIdx = toStops.findIndex((s: any) => s.stop?.id?.includes('-end'));
+        if (endIdx > -1) toStops.splice(endIdx, 0, newStop);
+        else toStops.push(newStop);
+        return newRoutes;
+      });
+
+      setStopToRouteOverride(prev => ({
+        ...prev,
+        [newPointId]: toRouteIdx,
+        ...(remainingCount > 0 ? { [stopId]: fromRouteIdx } : {}),
+      }));
+    } else {
+      // Full move
+      setRoutes(prev => {
+        const newRoutes = prev.map(r => ({
+          ...r,
+          route_data: { ...r.route_data, route: [...(r.route_data?.route || [])] }
+        }));
+        const fromStops = newRoutes[fromRouteIdx].route_data.route;
+        const stopIdx = fromStops.findIndex((s: any) => {
+          const sid = s.stop?.id || '';
+          const oid = sid.indexOf('__person_') > -1 ? sid.substring(0, sid.indexOf('__person_')) : sid;
+          return oid === stopId;
+        });
+        if (stopIdx === -1) return prev;
+        const [movedStop] = fromStops.splice(stopIdx, 1);
+        const toStops = newRoutes[toRouteIdx].route_data.route;
+        const endIdx = toStops.findIndex((s: any) => s.stop?.id?.includes('-end'));
+        if (endIdx > -1) toStops.splice(endIdx, 0, movedStop);
+        else toStops.push(movedStop);
+        return newRoutes;
+      });
+      setStopToRouteOverride(prev => ({ ...prev, [stopId]: toRouteIdx }));
+    }
+
+    setPendingMoves(true);
+    setMoveStopDialogData(null);
+    setSelectedPassengerIndices(new Set());
+  };
+
+  const handleRecalculateRoutes = () => {
+    // The Map component automatically recalculates road paths via Mapbox Directions API
+    // whenever `routes` state changes. Moving stops already updated `routes`, so the
+    // visual trazado is already recalculated. Here we just confirm the changes.
+    setPendingMoves(false);
+    setStopToRouteOverride({});
+    toast({
+      title: "Trazado actualizado",
+      description: "Los cambios han sido aplicados y el trazado recalculado.",
+    });
+  };
+
   // Build the JSON payload that will be sent to Nextmv (extracted for preview)
-  const buildNextmvPayload = (skipValidation = false) => {
+  const buildNextmvPayload = (skipValidation = false, forcedVehicleIds?: Record<string, string>) => {
     if (!skipValidation) {
       if (pickupPoints.length < 2) {
         throw new Error("Necesitas al menos 2 puntos de recogida");
@@ -2037,7 +1965,7 @@ const Index = () => {
             capacity: Number(50),
             max_distance: Number(100000), // 100 km in meters
             start_time: "2025-01-01T06:00:00Z",
-            end_time: "2025-01-01T22:00:00Z"
+            end_time: "2025-01-01T22:00:00Z",
           }
         },
         stops: pickupPoints.map((point, index) => {
@@ -2067,7 +1995,7 @@ const Index = () => {
             stopId = `${stopId}__person_${firstPersonId}`;
           }
           
-          return {
+          const stopEntry: any = {
             id: stopId,
             location: {
               lon: Number(finalLon),
@@ -2075,6 +2003,10 @@ const Index = () => {
             },
             quantity: nextmvQuantity // Negative value for Nextmv API
           };
+          if (forcedVehicleIds && forcedVehicleIds[String(point.id)]) {
+            stopEntry.vehicle_ids = [forcedVehicleIds[String(point.id)]];
+          }
+          return stopEntry;
         }),
         vehicles: (vehicles.length > 0 ? vehicles : []).map((vehicle, index) => {
           // Get start location from vehicle config only (don't use fallbacks)
@@ -2185,9 +2117,6 @@ const Index = () => {
               }
             } else if (key === 'start_location' || key === 'location' || key === 'config') {
               result[key] = validateAndFixTypes(value);
-            } else if (key === 'travel_type') {
-              // Preserve travel_type as string
-              result[key] = value;
             } else {
               result[key] = validateAndFixTypes(value);
             }
@@ -2200,19 +2129,6 @@ const Index = () => {
       // Apply type validation and fixing
       const validatedPayload = validateAndFixTypes(nextmvPayload);
 
-      // Validate the payload structure
-      console.log("Nextmv payload structure (before validation):", JSON.stringify(nextmvPayload, null, 2));
-      console.log("Optimization config:", optimizationConfig);
-      console.log("Nextmv payload structure (after validation):", JSON.stringify(validatedPayload, null, 2));
-      console.log("Payload validation:", {
-        hasInput: !!validatedPayload.input,
-        hasStops: !!validatedPayload.input.stops,
-        stopsCount: validatedPayload.input.stops?.length,
-        hasVehicles: !!validatedPayload.input.vehicles,
-        vehiclesCount: validatedPayload.input.vehicles?.length,
-        hasDefaults: !!validatedPayload.input.defaults,
-      });
-
       // Final validation: Ensure JSON is valid and doesn't contain undefined/null values
       const cleanPayload = JSON.parse(JSON.stringify(validatedPayload, (key, value) => {
         // Remove undefined values
@@ -2220,9 +2136,6 @@ const Index = () => {
         // Keep null values as they might be intentional
         return value;
       }));
-
-    // Verify the cleaned payload
-    console.log("Cleaned payload (no undefined values):", JSON.stringify(cleanPayload, null, 2));
 
     // Store the JSON and endpoint to display (use cleaned version)
     const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
@@ -2281,7 +2194,7 @@ const Index = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewJsonDialogOpen, vehicles, pickupPoints, optimizationConfig]);
 
-  const handleOptimizeRoutes = async () => {
+  const handleOptimizeRoutes = async (forcedVehicleIds?: Record<string, string>) => {
     if (pickupPoints.length < 2) {
       toast({
         title: "Error",
@@ -2318,32 +2231,21 @@ const Index = () => {
     setIsPanelCollapsed(false);
     try {
       // STEP 1: pickup_points already exist in MySQL — map local IDs to DB records
-      console.log("=== MAPPING LOCAL PICKUP_POINTS TO DB ===");
       const MapConstructor = globalThis.Map || window.Map;
       const localPointToDbPickupPointMap = new MapConstructor<string, any>();
       const passengerMap = new MapConstructor<string, any>();
       for (const localPoint of pickupPoints) {
         localPointToDbPickupPointMap.set(localPoint.id, localPoint);
       }
-      console.log(`✅ Mapped ${localPointToDbPickupPointMap.size} pickup_points`);
-      
+
       // Build the JSON payload using the extracted function
-      const { payload: cleanPayload, endpoint: nextmvFullUrl } = buildNextmvPayload();
+      const { payload: cleanPayload, endpoint: nextmvFullUrl } = buildNextmvPayload(false, forcedVehicleIds);
       setNextmvJson(cleanPayload);
       setNextmvEndpoint(nextmvFullUrl);
       const nextmvPath = "/v1/applications/workspace-dgxjzzgctd/runs";
       const nextmvEndpoint = "/api/nextmv" + nextmvPath; // Use proxy in development
       
-      console.log("Calling Nextmv API:", {
-        endpoint: nextmvEndpoint,
-        fullUrl: nextmvFullUrl,
-        pickupPointsCount: pickupPoints.length,
-        vehiclesCount: vehicles.length,
-      });
-      
-      // Get Nextmv API key from environment or use fallback
-      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY || "nxmvv1_lhcoj3zDR:f5d1c365105ef511b4c47d67c6c13a729c2faecd36231d37dcdd2fcfffd03a6813235230";
-      
+      const NEXTMV_API_KEY = import.meta.env.VITE_NEXTMV_API_KEY as string;
       if (!NEXTMV_API_KEY) {
         throw new Error("VITE_NEXTMV_API_KEY no está configurado. Por favor, configura tu API key de Nextmv.");
       }
@@ -2373,15 +2275,6 @@ const Index = () => {
             throw new Error(`Invalid JSON payload: ${e}`);
           }
           
-          console.log("Sending JSON request to Nextmv:", {
-            url: apiUrl,
-            method: "POST",
-            contentType: "application/json",
-            bodyLength: requestBodyString.length,
-            bodyPreview: requestBodyString.substring(0, 500),
-            fullBody: requestBodyString
-          });
-          
           response = await fetch(apiUrl, {
             method: "POST",
             headers: {
@@ -2404,13 +2297,6 @@ const Index = () => {
           // If parsing fails, use the raw text
           responseData = { raw: responseText };
         }
-        
-        console.log("Nextmv API response:", {
-          status: response.status,
-          statusText: response.statusText,
-          data: responseData,
-          ok: response.ok
-        });
         
         // If response is not ok, treat it as an error
         if (!response.ok) {
@@ -2619,16 +2505,13 @@ const Index = () => {
       let runId: string | null = null;
       if (responseData && responseData.id) {
         runId = responseData.id;
-        console.log("Received run ID from Nextmv:", runId);
       } else if (responseData && responseData.run_id) {
         runId = responseData.run_id;
-        console.log("Received run ID from Nextmv:", runId);
       }
 
       // If we have a run ID, fetch the run result
       let data: any = null;
       if (runId) {
-        console.log("Fetching run result for ID:", runId);
         
         // Build the GET URL for the run
         const NEXTMV_APPLICATION_ID = "workspace-dgxjzzgctd";
@@ -2660,28 +2543,30 @@ const Index = () => {
             }
             
             const runData = await runResponse.json();
-            console.log(`Run status (attempt ${attempts}):`, runData);
-            
+
             // Check metadata.status to determine if run is complete
             const status = runData.metadata?.status || runData.status;
             
             if (status === "succeeded") {
               data = runData;
               solutionAvailable = true;
-              console.log("Run succeeded, proceeding to display routes");
             } else if (status === "failed" || status === "error") {
               throw new Error(`Run failed: ${runData.error || runData.message || runData.metadata?.error || "Unknown error"}`);
             } else {
               // Still processing, wait 10 seconds and try again
-              console.log(`Run still processing (status: ${status || "unknown"}), waiting 10 seconds...`);
               await new Promise(resolve => setTimeout(resolve, pollInterval));
             }
           } catch (pollError: any) {
-            if (attempts >= maxAttempts) {
-              throw new Error(`Timeout waiting for solution: ${pollError.message || "Maximum polling attempts reached"}`);
+            const errMsg = pollError?.message || String(pollError);
+            console.error(`Error polling run (attempt ${attempts}/${maxAttempts}):`, errMsg, pollError);
+            // If the run definitively failed (not a transient network error), stop retrying
+            if (errMsg.startsWith('Run failed:')) {
+              throw pollError;
             }
-            // Wait 10 seconds before retrying
-            console.log(`Error polling run, retrying in 10 seconds... (attempt ${attempts}/${maxAttempts})`);
+            if (attempts >= maxAttempts) {
+              throw new Error(`Timeout waiting for solution: ${errMsg || "Maximum polling attempts reached"}`);
+            }
+            // Wait 10 seconds before retrying on transient errors
             await new Promise(resolve => setTimeout(resolve, pollInterval));
           }
         }
@@ -2732,38 +2617,28 @@ const Index = () => {
         const stopIdToPickupPointMap = new MapConstructor<string, any>();
         const stopsFromPayload = cleanPayload.input.stops || [];
         
-        console.log(`Linking ${stopsFromPayload.length} stops to already-created pickup_points...`);
-        
         for (const stop of stopsFromPayload) {
           const stopId = stop.id;
           const originalPointId = extractOriginalPointId(stopId);
           const dbPickupPoint = localPointToDbPickupPointMap.get(originalPointId);
-          
+
           if (dbPickupPoint) {
             stopIdToPickupPointMap.set(stopId, dbPickupPoint);
-            console.log(`✅ Linked stop ${stopId} to pickup_point ${dbPickupPoint.id}`);
-          } else {
-            console.warn(`⚠️ No pickup_point found for stop ${stopId} (original: ${originalPointId})`);
           }
         }
 
         // STEP 2: Create vehicle_optimization records
         const vehicleMap = new MapConstructor<string, any>();
-        console.log(`=== STEP 2: Creating ${vehicles.length} vehicle_optimization records ===`);
-        console.log("Vehicles from state:", vehicles.map((v, i) => ({ index: i, id: v.id, name: v.name })));
-        console.log("Solution vehicles from Nextmv:", (solution.vehicles || []).map((v: any) => ({ id: v.id })));
         for (let index = 0; index < vehicles.length; index++) {
           const localVehicle = vehicles[index];
           const nextmvVehicleId = String(localVehicle.id || `vehicle-${index}`);
 
           // Skip DB record creation for quick-config vehicles — they have no real plate yet
           if (localVehicle.isQuickConfig) {
-            console.log(`STEP 2 — Vehicle ${index}: quick-config, skipping vehicle_optimization`);
             continue;
           }
 
           const plate = localVehicle.name || `vehicle-${index}`;
-          console.log(`STEP 2 — Vehicle ${index}: plate="${plate}", nextmvVehicleId="${nextmvVehicleId}"`);
           try {
             const payload = {
               fk_vehicle: plate,
@@ -2775,20 +2650,16 @@ const Index = () => {
             };
             const vehicleData = await createVehicleOptimization(payload);
             vehicleMap.set(nextmvVehicleId, vehicleData);
-            console.log(`✅ STEP 2 — Created vehicle_optimization id=${vehicleData.id} for plate="${plate}"`);
           } catch (err: any) {
             console.error(`❌ STEP 2 — Error creating vehicle_optimization for "${plate}":`, err?.message || err);
           }
         }
-        console.log(`=== STEP 2 DONE: vehicleMap has ${vehicleMap.size} entries:`, Array.from(vehicleMap.keys()));
 
         // STEP 3: Create optimization record
         let optimizationRecord: any = null;
         try {
-          console.log("=== STEP 3: Creating optimization record ===");
           optimizationRecord = await createOptimization({ optimization_result: data });
           savedOptimizationId = optimizationRecord.id;
-          console.log(`✅ STEP 3 — Created optimization id=${optimizationRecord.id}`);
         } catch (err: any) {
           console.error("❌ STEP 3 — Error creating optimization:", err?.message || err);
         }
@@ -2802,7 +2673,6 @@ const Index = () => {
           vehicleMap: vehicleMapObj,
           optimizationId: optimizationRecord?.id ?? null,
         });
-        console.log(`✅ Optimization ready to save. vehicleMap has ${vehicleMap.size} entries.`);
       } catch (dbError) {
         console.error("Error saving to MySQL:", dbError);
       }
@@ -2830,6 +2700,9 @@ const Index = () => {
       setRoutes(routesFromSolution);
       setVisibleRoutes(new Set(routesFromSolution.map((_: any, index: number) => index)));
       setSelectedRunData(data);
+      setPendingMoves(false);
+      setStopToRouteOverride({});
+      setIsSettingsOpen(false);
 
       toast({
         title: "Rutas optimizadas",
@@ -2880,9 +2753,10 @@ const Index = () => {
         category: routeFormCategory,
         fk_organization: 321,
       });
-      console.log(`✅ Created route id=${routeRecord.id}`);
 
-      if (includeSchedule) {
+      // For created vehicles dbVehicle already exists, so always create schedule.
+      // For quick-config vehicles, only create if the user explicitly opted in.
+      if (includeSchedule || !!dbVehicle) {
         // For quick-config vehicles: validate plate exists in DB, then create vehicle_optimization
         let resolvedDbVehicle = dbVehicle;
         if (!resolvedDbVehicle) {
@@ -2921,7 +2795,6 @@ const Index = () => {
           end_time: scheduleFormEndTime || null,
           fk_organization: 321,
         });
-        console.log(`✅ Created schedule id=${scheduleRecord.id}`);
 
         // 3. Create route_schedule (links route + schedule)
         const routeScheduleRecord = await createRouteSchedule({
@@ -2929,7 +2802,6 @@ const Index = () => {
           fk_schedule: scheduleRecord.id,
           firebase_trace_url: null,
         });
-        console.log(`✅ Created route_schedule id=${routeScheduleRecord.id}`);
 
         // 4. Create route_schedule_vehicle
         const vehiclePlate = tempVehiclePlate.trim() || resolvedDbVehicle.fk_vehicle;
@@ -2937,7 +2809,6 @@ const Index = () => {
           fk_vehicle: vehiclePlate,
           fk_route_schedule: routeScheduleRecord.id,
         });
-        console.log(`✅ Created route_schedule_vehicle fk_vehicle="${vehiclePlate}"`);
 
         // 5. Create route_optimization for this vehicle
         const routeData = await createRoute({
@@ -2948,7 +2819,6 @@ const Index = () => {
           distance: Number(selectedVehicleForSave.route_travel_distance || selectedVehicleForSave.route_distance || 0),
           time: Number(selectedVehicleForSave.route_travel_duration || selectedVehicleForSave.route_duration || 0),
         });
-        console.log(`✅ Created route_optimization id=${routeData.id}`);
 
         // 6. Create bus_stop + stop_optimization for each stop of this vehicle
         let stopOrder = 0;
@@ -2973,6 +2843,15 @@ const Index = () => {
               fk_route_optimization: routeData.id,
               fk_bus_stop: busStopRecord.id,
             });
+            if (dbPickupPoint.person_id) {
+              await createRouteScheduleTrackable({
+                fk_route_schedule: routeScheduleRecord.id,
+                fk_trackable_organization: 321,
+                fk_trackable_code: dbPickupPoint.person_id,
+                spot_row: null,
+                spot_col: null,
+              });
+            }
           } catch (err: any) {
             console.error(`Error creating stop:`, err?.message);
           }
@@ -2999,8 +2878,48 @@ const Index = () => {
     }
   };
 
+  const tourSteps: TourStep[] = [
+    {
+      target: "#tour-download-template",
+      title: "1. Descarga la plantilla",
+      content: "Descarga el archivo Excel con el formato correcto y rellénalo con los nombres, direcciones y coordenadas de tus pasajeros. Si aún no tienes coordenadas, usa la herramienta de Geocodificación.",
+      placement: "bottom",
+    },
+    {
+      target: "#tour-upload-excel",
+      title: "2. Sube tu archivo",
+      content: "Una vez lista la plantilla, súbela aquí. Los puntos de recogida se cargarán automáticamente y aparecerán en el mapa.",
+      placement: "bottom",
+    },
+    {
+      target: "#tour-pickup-points-card",
+      title: "3. Revisa los puntos",
+      content: "Aquí verás todos los puntos cargados. Puedes editarlos, eliminarlos o agregar más manualmente con el botón 'Agregar Punto'.",
+      placement: "right",
+    },
+    {
+      target: "#tour-vehicles-tab",
+      title: "4. Configura los vehículos",
+      content: "Haz clic en esta pestaña para agregar los vehículos que harán las rutas: placa, capacidad máxima de pasajeros y punto de salida.",
+      placement: "bottom",
+    },
+    {
+      target: "#tour-criteria-tab",
+      title: "5. Criterios (opcional)",
+      content: "Aquí puedes ajustar si el optimizador prioriza distancia o tiempo, y cuánto tiempo tiene para calcular la mejor solución. Los valores por defecto funcionan bien para la mayoría de casos.",
+      placement: "bottom",
+    },
+    {
+      target: "#tour-optimize-button",
+      title: "6. ¡Optimiza!",
+      content: "Con los puntos y vehículos listos, haz clic aquí para calcular las rutas óptimas. El resultado aparecerá en el mapa con cada vehículo en un color diferente.",
+      placement: "top",
+    },
+  ];
+
   return (
     <Layout>
+      <TourTooltip steps={tourSteps} active={tourActive} onClose={() => setTourActive(false)} />
       <AlertDialog open={showReplaceResultsDialog} onOpenChange={setShowReplaceResultsDialog}>
         <AlertDialogContent className="max-w-sm">
           <AlertDialogHeader>
@@ -3024,103 +2943,85 @@ const Index = () => {
         </AlertDialogContent>
       </AlertDialog>
 
-        {/* Optimization Section */}
-        <Card className="mb-6">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center justify-between text-base">
-              <div className="flex items-center gap-2">
-                <Settings className="w-4 h-4" />
-                <span>Optimización de Rutas</span>
-              </div>
-              <Button
-                onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                variant="outline"
-                size="sm"
-              >
-                <Settings className="w-4 h-4 mr-2" />
-                Configurar parámetros
-              </Button>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            {/* Summary Section */}
-            <div className="grid grid-cols-3 gap-2 mb-2 pb-2 border-b">
-              <div className="flex items-center gap-2">
-                <MapPin className="w-4 h-4 text-primary flex-shrink-0" />
-                <div className="flex items-baseline gap-1.5 min-w-0">
-                  <p className="text-xs text-muted-foreground whitespace-nowrap">Puntos de Recogida:</p>
-                  <p className="text-base font-bold">{pickupPoints.length}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Truck className="w-4 h-4 text-secondary-foreground flex-shrink-0" />
-                <div className="flex items-baseline gap-1.5 min-w-0">
-                  <p className="text-xs text-muted-foreground whitespace-nowrap">Pasajeros:</p>
-                  <p className="text-base font-bold">{totalPassengers}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Route className="w-4 h-4 text-accent-foreground flex-shrink-0" />
-                <div className="flex items-baseline gap-1.5 min-w-0">
-                  <p className="text-xs text-muted-foreground whitespace-nowrap">Vehículos:</p>
-                  <p className="text-base font-bold">{vehicles.length}</p>
-                </div>
-              </div>
-            </div>
-            {(pickupPoints.length < 2 || vehicles.length === 0) && (
-              <p className="text-xs text-muted-foreground text-center mb-2">
-                {pickupPoints.length < 2 && "Necesitas al menos 2 puntos de recogida. "}
-                {vehicles.length === 0 && "Necesitas configurar al menos 1 vehículo."}
-              </p>
-            )}
-            <div className="flex justify-end">
-              <Button
-                onClick={() => {
-                  if (routes.length > 0) {
-                    setShowReplaceResultsDialog(true);
-                  } else {
-                    handleOptimizeRoutes();
-                  }
-                }}
-                disabled={isOptimizing || pickupPoints.length < 2 || vehicles.length === 0}
-                className="bg-primary hover:bg-primary/90"
-                size="default"
-              >
-                {isOptimizing ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Optimizando...
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 mr-2" />
-                    Optimizar Rutas
-                  </>
-                )}
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      <AlertDialog open={showClearOptimizationDialog} onOpenChange={setShowClearOptimizationDialog}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>¿Borrar la optimización actual?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se perderán los resultados de esta optimización. Esta acción no se puede deshacer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2 sm:flex-row">
+            <AlertDialogCancel className="flex-1 sm:mt-0">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setSelectedRunId(null);
+                setSelectedRunData(null);
+                setRoutes([]);
+                setVisibleRoutes(new Set());
+                setShowClearOptimizationDialog(false);
+              }}
+              className="flex-1 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Sí, borrar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={showReoptimizeDialog} onOpenChange={setShowReoptimizeDialog}>
+        <AlertDialogContent className="max-w-sm">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Re-optimizar rutas</AlertDialogTitle>
+            <AlertDialogDescription>
+              Vas a editar los parámetros de optimización. Una vez los ajustes, podrás ejecutar una nueva optimización con la configuración actualizada.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-row gap-2 sm:flex-row">
+            <AlertDialogCancel className="flex-1 sm:mt-0">Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowReoptimizeDialog(false);
+                setIsSettingsOpen(true);
+              }}
+              className="flex-1"
+            >
+              Editar parámetros
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+        <div className="mb-4">
+          <h1 className="text-xl font-semibold flex items-center gap-2">
+            <Route className="w-5 h-5" />
+            Nueva Optimización
+          </h1>
+          <p className="text-sm text-muted-foreground mt-1 ml-7">
+            Agrega los puntos de recogida, configura los vehículos y ejecuta la optimización.
+          </p>
+        </div>
 
         {/* Main Content Area - Flex layout for settings, results and map */}
-        <div className="flex gap-4 w-full">
+        <div className="flex gap-2 w-full">
           {/* Settings Section - Left Side */}
           {isSettingsOpen && (
-            <div className="w-[600px] flex-shrink-0">
+            <>
+            <div className="flex-shrink-0" style={{ width: settingsPanelWidth }}>
               <Card className="h-[calc(100vh-240px)] flex flex-col">
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center justify-between text-base">
-                    <div className="flex items-center gap-2">
+                    <span className="flex items-center gap-2">
                       <Settings className="w-4 h-4" />
-                      <span>Configurar Optimización</span>
-                    </div>
+                      Configurar Optimización
+                    </span>
                     <Button
                       variant="ghost"
-                      size="icon"
-                      className="h-6 w-6"
-                      onClick={() => setIsSettingsOpen(false)}
+                      size="sm"
+                      className="text-xs text-muted-foreground h-7 px-2"
+                      onClick={() => setTourActive(true)}
                     >
-                      <X className="w-4 h-4" />
+                      ¿Cómo funciona?
                     </Button>
                   </CardTitle>
                 </CardHeader>
@@ -3131,33 +3032,43 @@ const Index = () => {
                         <MapPin className="w-4 h-4" />
                         Puntos de Recogida
                       </TabsTrigger>
-                      <TabsTrigger value="vehicles" className="flex items-center gap-2">
+                      <TabsTrigger id="tour-vehicles-tab" value="vehicles" className="flex items-center gap-2">
                         <Truck className="w-4 h-4" />
                         Vehículos
                       </TabsTrigger>
-                      <TabsTrigger value="config" className="flex items-center gap-2">
+                      <TabsTrigger id="tour-criteria-tab" value="config" className="flex items-center gap-2">
                         <Settings className="w-4 h-4" />
                         Criterios
                       </TabsTrigger>
                     </TabsList>
-                    <TabsContent value="pickup-points" className="space-y-6 mt-0">
-                      <Card>
+                    <TabsContent value="pickup-points" className="mt-0">
+                      <Card id="tour-pickup-points-card">
                         <CardHeader>
                           <CardTitle className="flex items-center gap-2">
                             <MapPin className="w-5 h-5" />
                             Puntos de Recogida
                           </CardTitle>
                           <div className="flex gap-2 flex-wrap overflow-hidden" style={{ marginTop: '32px' }}>
-                            <label htmlFor="excel-upload" className="cursor-pointer flex-shrink-0">
+                            <label id="tour-upload-excel" htmlFor="excel-upload" className="cursor-pointer flex-shrink-0">
                               <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
                                 className="cursor-pointer px-3 whitespace-nowrap"
+                                disabled={isUploadingFile}
                                 onClick={() => document.getElementById("excel-upload")?.click()}
                               >
-                                <Upload className="w-4 h-4 mr-1.5" />
-                                Subir Excel
+                                {isUploadingFile ? (
+                                  <>
+                                    <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                                    Cargando...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Upload className="w-4 h-4 mr-1.5" />
+                                    Subir Excel
+                                  </>
+                                )}
                               </Button>
                               <input
                                 id="excel-upload"
@@ -3165,9 +3076,11 @@ const Index = () => {
                                 accept=".xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                                 onChange={handleFileInputChange}
                                 className="hidden"
+                                disabled={isUploadingFile}
                               />
                             </label>
                             <Button
+                              id="tour-download-template"
                               type="button"
                               variant="outline"
                               size="sm"
@@ -3222,7 +3135,7 @@ const Index = () => {
                           </div>
                         </CardHeader>
                         <CardContent>
-                          <PickupPointsList 
+                          <PickupPointsList
                             points={pickupPoints} 
                             onRemove={handleRemovePickupPoint}
                             onPointClick={(point) => setFocusedPoint(point)}
@@ -3273,11 +3186,40 @@ const Index = () => {
                               </SelectContent>
                             </Select>
                             <p className="text-xs text-muted-foreground">
-                              Determina si la optimización se basa en distancia o tiempo de viaje.
+                              {optimizationConfig.travelType === "distance"
+                                ? "El optimizador minimiza los kilómetros recorridos. Ideal cuando el combustible es el costo principal."
+                                : "El optimizador minimiza el tiempo total en ruta. Ideal cuando la puntualidad o los salarios del conductor son el costo principal."}
                             </p>
                           </div>
                           <div className="space-y-2">
-                            <Label htmlFor="solve-duration">Duración de Resolución</Label>
+                            <div className="flex items-center justify-between">
+                              <Label htmlFor="solve-duration">Duración de Resolución</Label>
+                              {pickupPoints.length > 0 && (
+                                <button
+                                  type="button"
+                                  className="text-xs text-primary underline underline-offset-2 hover:text-primary/80"
+                                  onClick={() => setOptimizationConfig(prev => ({ ...prev, solveDuration: suggestedDuration }))}
+                                >
+                                  Sugerido: {suggestedDuration}
+                                </button>
+                              )}
+                            </div>
+                            <div className="flex gap-2">
+                              {["10s", "30s", "1m", "2m", "5m"].map(preset => (
+                                <button
+                                  key={preset}
+                                  type="button"
+                                  onClick={() => setOptimizationConfig(prev => ({ ...prev, solveDuration: preset }))}
+                                  className={`px-3 py-1 text-xs rounded-md border transition-colors ${
+                                    optimizationConfig.solveDuration === preset
+                                      ? "bg-primary text-primary-foreground border-primary"
+                                      : "bg-background text-muted-foreground border-border hover:border-primary hover:text-primary"
+                                  }`}
+                                >
+                                  {preset}
+                                </button>
+                              ))}
+                            </div>
                             <Input
                               id="solve-duration"
                               type="text"
@@ -3288,7 +3230,9 @@ const Index = () => {
                               placeholder="10s"
                             />
                             <p className="text-xs text-muted-foreground">
-                              Tiempo máximo para resolver la optimización (ej: "10s", "30s", "1m").
+                              {pickupPoints.length > 0
+                                ? `Para ${pickupPoints.length} punto${pickupPoints.length !== 1 ? "s" : ""} se sugieren ${suggestedDuration}. Más tiempo le da al optimizador más intentos para encontrar una mejor solución, pero la espera es mayor.`
+                                : "Más tiempo le da al optimizador más intentos para encontrar una mejor solución, pero la espera es mayor."}
                             </p>
                           </div>
                         </CardContent>
@@ -3296,8 +3240,50 @@ const Index = () => {
                     </TabsContent>
                   </Tabs>
                 </CardContent>
+                <div className="p-4 border-t flex-shrink-0">
+                  <Button
+                    id="tour-optimize-button"
+                    onClick={() => {
+                      if (routes.length > 0) {
+                        setShowReplaceResultsDialog(true);
+                      } else {
+                        handleOptimizeRoutes();
+                      }
+                    }}
+                    disabled={isOptimizing || pickupPoints.length < 2 || vehicles.length === 0}
+                    className="w-full bg-primary hover:bg-primary/90"
+                    size="default"
+                  >
+                    {isOptimizing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Optimizando...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4 mr-2" />
+                        Optimizar Rutas
+                      </>
+                    )}
+                  </Button>
+                </div>
               </Card>
             </div>
+            {/* Resize handle */}
+            <div
+              className="flex-shrink-0 w-2 cursor-col-resize flex items-center justify-center group hover:bg-border/60 transition-colors rounded"
+              onMouseDown={(e) => {
+                isResizingSettings.current = true;
+                resizeStartX.current = e.clientX;
+                resizeStartWidth.current = settingsPanelWidth;
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+              }}
+            >
+              <GripVertical className="w-3 h-3 text-muted-foreground/40 group-hover:text-muted-foreground transition-colors" />
+            </div>
+            </>
           )}
           {/* Results Container - Left Side (only shown when routes exist) */}
           {routes.length > 0 && (() => {
@@ -3314,7 +3300,8 @@ const Index = () => {
               return hasLocation && isActualStop;
             }).length;
             const hasActualStops = actualStopCount >= 1;
-            return (hasValidCoordinates && hasActualStops) ? { route, index } : null;
+            // When user is moving passengers keep empty routes visible so they can receive passengers back
+            return (hasValidCoordinates && hasActualStops) || pendingMoves ? { route, index } : null;
           }).filter((item): item is { route: any; index: number } => item !== null);
 
           // Group by vehicle and keep only one route per vehicle
@@ -3380,29 +3367,18 @@ const Index = () => {
             if (route.name) {
               return route.name;
             }
-            
-            // Debug logging
-            console.log(`[getVehicleName] Route ${routeIndex}:`, {
-              vehicle_id: route.vehicle_id,
-              route_data_id: route.route_data?.id,
-              vehicles_count: vehicles.length,
-              vehicle_ids: vehicles.map(v => v.id)
-            });
-            
+
             const vehicle = getVehicleFromRoute(routeIndex, route);
             if (vehicle) {
-              console.log(`[getVehicleName] Matched vehicle: ${vehicle.name}`);
               return vehicle.name;
             }
-            
+
             // Third, try to get vehicle name from route_data if it exists
             if (route.route_data?.name) {
-              console.log(`[getVehicleName] Using route_data.name: ${route.route_data.name}`);
               return route.route_data.name;
             }
-            
+
             // Final fallback
-            console.warn(`[getVehicleName] Using fallback for route ${routeIndex}. vehicle_id: ${route.vehicle_id}, route_data.id: ${route.route_data?.id}`);
             return `Vehículo ${routeIndex + 1}`;
           };
 
@@ -3507,30 +3483,15 @@ const Index = () => {
                         <History className="w-4 h-4" />
                         Optimización
                       </span>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          title="Editar parámetros"
-                          onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-6 w-6"
-                          onClick={() => {
-                            setSelectedRunId(null);
-                            setSelectedRunData(null);
-                            setRoutes([]);
-                            setVisibleRoutes(new Set());
-                          }}
-                        >
-                          <X className="w-4 h-4" />
-                        </Button>
-                      </div>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        title="Borrar optimización"
+                        onClick={() => setShowClearOptimizationDialog(true)}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3 text-sm flex-1 min-h-0 overflow-y-auto">
@@ -3609,6 +3570,15 @@ const Index = () => {
                         <Download className="w-4 h-4 mr-2" />
                         Descargar KML
                       </Button>
+                      <Button
+                        onClick={() => setShowReoptimizeDialog(true)}
+                        variant="outline"
+                        size="sm"
+                        className="w-full"
+                      >
+                        <Settings className="w-4 h-4 mr-2" />
+                        Re-optimizar con otros parámetros
+                      </Button>
                     </div>
                   </CardContent>
                 </Card>
@@ -3624,21 +3594,38 @@ const Index = () => {
                     <CardHeader className="pb-2 pt-3 px-3 flex-shrink-0">
                       <CardTitle className="text-sm flex items-center justify-between">
                         <span>Lista de Rutas</span>
-                        {selectedRouteIndex !== null && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 text-xs"
-                            onClick={() => {
-                              setSelectedRouteIndex(null);
-                              // Show all routes on the map
-                              setVisibleRoutes(new Set(routes.map((_, index) => index)));
-                            }}
-                          >
-                            <ArrowLeft className="w-3 h-3 mr-1" />
-                            Volver
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {pendingMoves && (
+                            <Button
+                              size="sm"
+                              className="h-7 text-xs bg-amber-500 hover:bg-amber-600 text-white"
+                              onClick={handleRecalculateRoutes}
+                              disabled={isOptimizing}
+                            >
+                              {isOptimizing ? (
+                                <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                              ) : (
+                                <RefreshCw className="w-3 h-3 mr-1" />
+                              )}
+                              Recalcular trazado
+                            </Button>
+                          )}
+                          {selectedRouteIndex !== null && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="h-6 text-xs"
+                              onClick={() => {
+                                setSelectedRouteIndex(null);
+                                // Show all routes on the map
+                                setVisibleRoutes(new Set(routes.map((_, index) => index)));
+                              }}
+                            >
+                              <ArrowLeft className="w-3 h-3 mr-1" />
+                              Volver
+                            </Button>
+                          )}
+                        </div>
                       </CardTitle>
                     </CardHeader>
                     <CardContent className="flex-1 min-h-0 flex flex-col !p-0 overflow-hidden">
@@ -3692,8 +3679,9 @@ const Index = () => {
                                 <div className="flex-1 min-w-0">
                                   <p className="font-semibold text-sm truncate">{vehicleName}</p>
                                   <div className="grid grid-cols-2 gap-x-4 gap-y-1 mt-1 text-xs text-muted-foreground">
-                                    <div>
-                                      <span className="font-medium">Pasajeros:</span> {vehicleCapacity > 0 ? `${passengerCount} / ${vehicleCapacity}` : passengerCount}
+                                    <div className={vehicleCapacity > 0 && passengerCount > vehicleCapacity ? "text-red-600 font-semibold" : ""}>
+                                      <span className="font-medium">Pasajeros:</span>{" "}
+                                      {vehicleCapacity > 0 ? `${passengerCount} / ${vehicleCapacity}` : passengerCount}
                                     </div>
                                     <div>
                                       <span className="font-medium">Paradas:</span> {actualStops}
@@ -3705,6 +3693,12 @@ const Index = () => {
                                       <span className="font-medium">Duración:</span> {durationMin} {durationUnit}
                                     </div>
                                   </div>
+                                  {vehicleCapacity > 0 && passengerCount > vehicleCapacity && (
+                                    <div className="mt-1.5 flex items-center gap-1 text-xs text-red-600 font-medium">
+                                      <span>⚠</span>
+                                      <span>Sobrecupo: excede por {passengerCount - vehicleCapacity} {passengerCount - vehicleCapacity === 1 ? "cupo" : "cupos"}. Mueve pasajeros para balancear.</span>
+                                    </div>
+                                  )}
                                   {pendingRouteData && (
                                     <Button
                                       size="sm"
@@ -3953,26 +3947,16 @@ const Index = () => {
                                 />
                                 <p className="font-semibold text-sm">Detalles de Paradas</p>
                               </div>
-                              {selectedRouteIndex !== null && (
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => {
-                                    setZoomToRoute(selectedRouteIndex);
-                                    // Reset after a short delay to allow re-triggering
-                                    setTimeout(() => setZoomToRoute(null), 100);
-                                  }}
-                                >
-                                  <ZoomIn className="w-3 h-3 mr-1" />
-                                  Ver ruta completa
-                                </Button>
-                              )}
                             </div>
                             <div className="space-y-2">
+                              {finalStopsWithDetails.filter(s => !s.isStartPoint && !s.isEndPoint).length === 0 && (
+                                <p className="text-sm text-muted-foreground text-center py-4 italic">
+                                  Sin paradas asignadas. Mueve pasajeros desde otras rutas hacia esta.
+                                </p>
+                              )}
                               {finalStopsWithDetails.map((stop, idx) => (
-                                <div 
-                                  key={idx} 
+                                <div
+                                  key={idx}
                                   className="p-2 rounded-lg border bg-muted/50 cursor-pointer hover:bg-muted transition-colors"
                                   onClick={() => {
                                     if (stop.location?.lon && stop.location?.lat) {
@@ -3986,7 +3970,7 @@ const Index = () => {
                                   }}
                                 >
                                   <div className="flex items-start gap-2 mb-1">
-                                    <div 
+                                    <div
                                       className="w-6 h-6 rounded-full text-white flex items-center justify-center flex-shrink-0 text-xs font-semibold"
                                       style={{ backgroundColor: color }}
                                     >
@@ -3995,8 +3979,32 @@ const Index = () => {
                                     <div className="flex-1 min-w-0">
                                       <p className="font-medium text-sm">
                                         {stop.pointName}
+                                        {stopToRouteOverride[stop.stopId] !== undefined && (
+                                          <span className="ml-2 text-xs text-amber-600 font-normal">(movido)</span>
+                                        )}
                                       </p>
                                     </div>
+                                    {!stop.isStartPoint && !stop.isEndPoint && uniqueVehicleRoutes.length > 1 && (
+                                      <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-6 w-6 flex-shrink-0 text-muted-foreground hover:text-primary"
+                                        title="Mover a otra ruta"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const pax = stop.passengers || [];
+                                          setSelectedPassengerIndices(new Set(pax.map((_: any, i: number) => i)));
+                                          setMoveStopDialogData({
+                                            stopId: stop.stopId,
+                                            stopName: stop.pointName,
+                                            fromRouteIdx: index,
+                                            passengers: pax,
+                                          });
+                                        }}
+                                      >
+                                        <ArrowRightLeft className="w-3.5 h-3.5" />
+                                      </Button>
+                                    )}
                                   </div>
                                   {stop.isStartPoint ? (
                                     <p className="text-xs text-muted-foreground italic ml-8">Punto de inicio - Sin pasajeros</p>
@@ -4105,7 +4113,7 @@ const Index = () => {
               size="lg"
             >
               <MousePointerClick className="w-4 h-4 mr-2" />
-              {clickMode ? "Exit Click Mode" : "Click to Add Points"}
+              {clickMode ? "Cancelar modo mapa" : "Agregar punto en mapa"}
             </Button>
           </div>
         </div>
@@ -4383,6 +4391,218 @@ const Index = () => {
               {isSavingRoute ? "Guardando..." : "Guardar"}
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move Stop Dialog */}
+      <Dialog open={!!moveStopDialogData} onOpenChange={(open) => {
+        if (!open) {
+          setMoveStopDialogData(null);
+          setSelectedPassengerIndices(new Set());
+          setConfirmMoveToRoute(null);
+        }
+      }}>
+        <DialogContent className="max-w-sm max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <ArrowRightLeft className="w-4 h-4" />
+              Mover pasajeros
+            </DialogTitle>
+          </DialogHeader>
+          {moveStopDialogData && (() => {
+            const dlgColors = ["#26bc30","#3b82f6","#f59e0b","#ef4444","#8b5cf6","#ec4899","#06b6d4","#84cc16"];
+            const seen = new Set<string>();
+            const dedupedRoutes: Array<{ route: any; index: number }> = [];
+            routes.forEach((route, idx) => {
+              const key = route.vehicle_id || route.route_data?.id || `route-${idx}`;
+              if (!seen.has(key)) { seen.add(key); dedupedRoutes.push({ route, index: idx }); }
+            });
+
+            const hasManyPassengers = moveStopDialogData.passengers.length > 1;
+            const selectedCount = selectedPassengerIndices.size;
+            const allSelected = selectedCount === moveStopDialogData.passengers.length;
+
+            // How many passengers are being moved
+            const sourcePoint = pickupPoints.find(p => p.id === moveStopDialogData.stopId);
+            const movingCount = hasManyPassengers
+              ? selectedCount
+              : (sourcePoint?.quantity || moveStopDialogData.passengers.length || 1);
+
+            // Calculate current passenger count in a route
+            const getRouteCount = (routeIdx: number): number =>
+              (routes[routeIdx]?.route_data?.route || []).reduce((sum: number, rs: any) => {
+                const sid = rs.stop?.id || '';
+                if (sid.includes('-start') || sid.includes('-end')) return sum;
+                const oid = sid.indexOf('__person_') > -1 ? sid.substring(0, sid.indexOf('__person_')) : sid;
+                const pt = pickupPoints.find(p => p.id === oid);
+                return sum + (pt?.quantity || 1);
+              }, 0);
+
+            const doMove = (toRouteIdx: number) => {
+              moveStop(
+                moveStopDialogData.stopId,
+                moveStopDialogData.fromRouteIdx,
+                toRouteIdx,
+                hasManyPassengers ? Array.from(selectedPassengerIndices) : moveStopDialogData.passengers.map((_, i) => i)
+              );
+              setConfirmMoveToRoute(null);
+            };
+
+            return (
+              <div className="space-y-4">
+                {/* Stop info */}
+                <div className="p-2 rounded-lg bg-muted/50 text-sm">
+                  <p className="font-medium text-xs text-muted-foreground">Parada</p>
+                  <p className="font-semibold truncate">{moveStopDialogData.stopName}</p>
+                </div>
+
+                {/* Passenger selection (only when > 1 passenger) */}
+                {hasManyPassengers && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                        Pasajeros a mover ({selectedCount} de {moveStopDialogData.passengers.length})
+                      </p>
+                      <button
+                        type="button"
+                        className="text-xs text-primary hover:underline"
+                        onClick={() => {
+                          setConfirmMoveToRoute(null);
+                          if (allSelected) {
+                            setSelectedPassengerIndices(new Set());
+                          } else {
+                            setSelectedPassengerIndices(new Set(moveStopDialogData.passengers.map((_, i) => i)));
+                          }
+                        }}
+                      >
+                        {allSelected ? "Ninguno" : "Todos"}
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {moveStopDialogData.passengers.map((p, i) => {
+                        const isSelected = selectedPassengerIndices.has(i);
+                        return (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => {
+                              setConfirmMoveToRoute(null);
+                              setSelectedPassengerIndices(prev => {
+                                const next = new Set(prev);
+                                if (next.has(i)) next.delete(i); else next.add(i);
+                                return next;
+                              });
+                            }}
+                            className={`text-xs px-2.5 py-1 rounded-full border font-medium transition-all ${
+                              isSelected
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-background text-muted-foreground border-border hover:border-primary/50"
+                            }`}
+                          >
+                            {p.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Route selection */}
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                    Ruta destino
+                  </p>
+                  <div className="space-y-2">
+                    {dedupedRoutes
+                      .filter(({ index }) => index !== moveStopDialogData.fromRouteIdx)
+                      .map(({ route, index }) => {
+                        const color = dlgColors[index % dlgColors.length];
+                        const vehicle = vehicles.find((v, vi) =>
+                          v.id === route.vehicle_id || String(v.id || `vehicle-${vi}`) === route.route_data?.id
+                        );
+                        const vehicleName = route.name || vehicle?.name || route.route_data?.name || `Vehículo ${index + 1}`;
+                        const capacity = vehicle?.capacity || 0;
+                        const currentCount = getRouteCount(index);
+                        const newCount = currentCount + movingCount;
+                        const isOver = capacity > 0 && newCount > capacity;
+                        const isFull = capacity > 0 && currentCount >= capacity;
+                        const canMove = !hasManyPassengers || selectedCount > 0;
+                        const isPendingConfirm = confirmMoveToRoute?.routeIdx === index;
+
+                        return (
+                          <div key={index} className="space-y-1">
+                            <button
+                              type="button"
+                              disabled={!canMove}
+                              onClick={() => {
+                                if (!canMove) return;
+                                if (isOver) {
+                                  setConfirmMoveToRoute({ routeIdx: index, vehicleName, currentCount, newCount, capacity });
+                                } else {
+                                  setConfirmMoveToRoute(null);
+                                  doMove(index);
+                                }
+                              }}
+                              className={`w-full text-left p-3 rounded-lg border-2 transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                                isPendingConfirm
+                                  ? "border-red-400 bg-red-50"
+                                  : isOver
+                                  ? "border-amber-300 hover:border-red-400 hover:bg-red-50/50"
+                                  : "border-border hover:border-primary hover:bg-primary/5"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-sm flex-shrink-0" style={{ backgroundColor: color }} />
+                                <span className="font-semibold text-sm truncate flex-1">{vehicleName}</span>
+                                {capacity > 0 ? (
+                                  <span className={`text-xs flex-shrink-0 font-medium ${
+                                    isOver ? "text-red-600" : isFull ? "text-amber-600" : "text-muted-foreground"
+                                  }`}>
+                                    {currentCount}/{capacity}
+                                    {movingCount > 0 && <span className="ml-1 opacity-70">→ {newCount}/{capacity}</span>}
+                                  </span>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground flex-shrink-0">{currentCount} pax</span>
+                                )}
+                              </div>
+                              {isFull && !isOver && (
+                                <p className="text-xs text-amber-600 mt-1">Cupo lleno</p>
+                              )}
+                            </button>
+
+                            {/* Inline confirmation when over capacity */}
+                            {isPendingConfirm && (
+                              <div className="p-3 rounded-lg border border-red-300 bg-red-50 text-sm space-y-2">
+                                <p className="text-red-700 font-medium text-xs">
+                                  ⚠ Esta ruta tiene el cupo lleno. Al mover quedaría con {newCount}/{capacity} ({newCount - capacity} cupo{newCount - capacity > 1 ? "s" : ""} de exceso). Mueve pasajeros entre rutas para balancear.
+                                </p>
+                                <p className="text-red-600 text-xs font-semibold">¿Confirmas que deseas mover estos pasajeros?</p>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => doMove(index)}
+                                    className="flex-1 text-xs py-1.5 rounded-md bg-red-600 text-white font-medium hover:bg-red-700 transition-colors"
+                                  >
+                                    Sí, mover con sobrecupo
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmMoveToRoute(null)}
+                                    className="flex-1 text-xs py-1.5 rounded-md border border-border bg-background text-foreground hover:bg-muted transition-colors"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
     </Layout>

@@ -1,15 +1,20 @@
 import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { History, Loader2, MapPin, Truck, Route, X, Download, ArrowLeft, ZoomIn, Trash2 } from "lucide-react";
+import { History, Loader2, MapPin, Truck, Route, X, Download, ArrowLeft, Trash2, UserPlus } from "lucide-react";
 import Layout from "@/components/Layout";
 import { useNavigate } from "react-router-dom";
 import Map from "@/components/Map";
-import { getPickupPoints, getOptimizations, getOptimization, getRoutesByOptimization, getStopsByRoute, deleteOptimization } from "@/lib/api";
+import { getPickupPoints, getOptimizations, getOptimization, getRoutesByOptimization, getStopsByRoute, deleteOptimization, addPassengerToRoute } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import * as XLSX from "xlsx";
+
 
 interface PickupPoint {
   id: string;
@@ -53,6 +58,16 @@ const HistoryPage = () => {
   const [zoomToRoute, setZoomToRoute] = useState<number | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // Add passenger modal state
+  const [addPassengerOpen, setAddPassengerOpen] = useState(false);
+  const [addPassengerForm, setAddPassengerForm] = useState({ nombre: "", direccion: "", latitud: "", longitud: "" });
+  const [addPassengerInsertAfter, setAddPassengerInsertAfter] = useState<number>(0);
+  const [addPassengerStops, setAddPassengerStops] = useState<Array<{ order: number; label: string }>>([]);
+  const [addPassengerIsSaving, setAddPassengerIsSaving] = useState(false);
+  const [addPassengerCapacity, setAddPassengerCapacity] = useState(0);
+  const [addPassengerCurrentCount, setAddPassengerCurrentCount] = useState(0);
+
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -159,6 +174,7 @@ const HistoryPage = () => {
             id: route.id,
             nextmv_id: route.nextmv_id,
             vehicle_id: route.fk_vehicle,
+            vehicle_capacity: route.vehicle_capacity ? Number(route.vehicle_capacity) : 0,
             name: route.fk_vehicle ? `Vehículo ${route.fk_vehicle}` : `Ruta ${route.id}`,
             route_data,
             stops: stops.map((stop: any) => ({
@@ -325,6 +341,79 @@ const HistoryPage = () => {
     return Array.from(personIds);
   };
 
+  // Add passenger helpers
+  const openAddPassenger = () => {
+    if (selectedRouteIndex === null) return;
+    const route = routes[selectedRouteIndex];
+    const currentStops = (route.stops || []).slice().sort((a: any, b: any) => a.order - b.order);
+    const options = currentStops.map((stop: any) => ({
+      order: stop.order,
+      label: stop.order === 0
+        ? "Después del punto de inicio"
+        : `Después de parada ${stop.order}: ${stop.fk_pickup_point?.address || `Parada ${stop.order}`}`,
+    }));
+    setAddPassengerStops(options);
+    const maxOrder = currentStops.length > 0 ? currentStops[currentStops.length - 1].order : 0;
+    setAddPassengerInsertAfter(maxOrder);
+    const passengerStops = currentStops.filter((s: any) => s.order > 0).length;
+    setAddPassengerCurrentCount(passengerStops);
+    setAddPassengerCapacity(route.vehicle_capacity || 0);
+    setAddPassengerForm({ nombre: "", direccion: "", latitud: "", longitud: "" });
+    setAddPassengerOpen(true);
+  };
+
+  const reloadRoute = async (routeIndex: number) => {
+    const route = routes[routeIndex];
+    if (!route?.id) return;
+    const stops = await getStopsByRoute(route.id);
+    setRoutes(prev => prev.map((r, i) => {
+      if (i !== routeIndex) return r;
+      return {
+        ...r,
+        stops: stops.map((s: any) => ({
+          order: s.order,
+          fk_pickup_point: { latitude: s.latitude, longitude: s.longitude, address: s.address },
+          passengers: [],
+        })),
+        route_data: {
+          ...r.route_data,
+          route: stops.map((s: any) => ({
+            stop: {
+              id: String(s.fk_pickup_point),
+              location: { lat: Number(s.latitude), lon: Number(s.longitude) },
+            },
+          })),
+        },
+      };
+    }));
+  };
+
+  const handleSavePassenger = async () => {
+    if (selectedRouteIndex === null) return;
+    const route = routes[selectedRouteIndex];
+    if (!route?.id) return;
+    const lat = parseFloat(addPassengerForm.latitud);
+    const lng = parseFloat(addPassengerForm.longitud);
+    if (isNaN(lat) || isNaN(lng)) return;
+    setAddPassengerIsSaving(true);
+    try {
+      await addPassengerToRoute(route.id, {
+        nombre: addPassengerForm.nombre,
+        address: addPassengerForm.direccion,
+        latitude: lat,
+        longitude: lng,
+        insertAfterOrder: addPassengerInsertAfter,
+      });
+      await reloadRoute(selectedRouteIndex);
+      setAddPassengerOpen(false);
+      toast({ title: "Pasajero agregado", description: `${addPassengerForm.nombre || "El pasajero"} fue agregado a la ruta` });
+    } catch {
+      toast({ title: "Error", description: "No se pudo agregar el pasajero", variant: "destructive" });
+    } finally {
+      setAddPassengerIsSaving(false);
+    }
+  };
+
   // Export functions
   const handleExportToExcel = () => {
     if (routes.length === 0) {
@@ -337,9 +426,6 @@ const HistoryPage = () => {
     }
 
     try {
-      console.log("=== EXCEL EXPORT STARTED (History) ===");
-      console.log("Routes count:", routes.length);
-      
       // Create a new workbook
       const workbook = XLSX.utils.book_new();
 
@@ -419,13 +505,9 @@ const HistoryPage = () => {
       // ===== CREATE A TAB FOR EACH ROUTE =====
       routes.forEach((route: any, routeIndex: number) => {
         try {
-          console.log(`Processing route ${routeIndex}:`, route);
-          
           const routeName = getVehicleName(route, routeIndex);
           const stops = getStopsWithDetails(route);
-          
-          console.log(`Route ${routeIndex} (${routeName}): ${stops.length} stops`);
-          
+
           // Get route distance and duration
           const totalDistance = route.total_distance || route.route_data?.route_travel_distance || 0;
           const totalDuration = route.total_duration || route.route_data?.route_travel_duration || 0;
@@ -480,14 +562,11 @@ const HistoryPage = () => {
           // Limit sheet name to 31 characters (Excel limit)
           const sheetName = routeName.length > 31 ? routeName.substring(0, 31) : routeName;
           XLSX.utils.book_append_sheet(workbook, routeSheet, sheetName);
-          console.log(`Added sheet: ${sheetName} with ${routeData.length} rows`);
         } catch (routeError) {
           console.error(`Error processing route ${routeIndex}:`, routeError);
           // Continue with other routes even if one fails
         }
       });
-      
-      console.log(`Total sheets created: ${workbook.SheetNames.length}`);
 
       // Check if workbook has any sheets
       if (workbook.SheetNames.length === 0) {
@@ -505,12 +584,8 @@ const HistoryPage = () => {
       const runId = selectedRunId || timestamp;
       const filename = `optimizacion_${runId}_${timestamp}.xlsx`;
 
-      console.log(`Writing Excel file: ${filename} with ${workbook.SheetNames.length} sheets`);
-
       // Write the file
       XLSX.writeFile(workbook, filename);
-
-      console.log("Excel file written successfully");
 
       toast({
         title: "Exportación exitosa",
@@ -570,6 +645,97 @@ const HistoryPage = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Add Passenger Modal */}
+      <Dialog open={addPassengerOpen} onOpenChange={setAddPassengerOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserPlus className="w-4 h-4" />
+              Agregar pasajero a la ruta
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label>Nombre</Label>
+              <Input
+                placeholder="Nombre del pasajero"
+                value={addPassengerForm.nombre}
+                onChange={e => setAddPassengerForm(f => ({ ...f, nombre: e.target.value }))}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Dirección</Label>
+              <Input
+                placeholder="Dirección"
+                value={addPassengerForm.direccion}
+                onChange={e => setAddPassengerForm(f => ({ ...f, direccion: e.target.value }))}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Latitud</Label>
+                <Input
+                  placeholder="Ej: 4.710989"
+                  value={addPassengerForm.latitud}
+                  onChange={e => setAddPassengerForm(f => ({ ...f, latitud: e.target.value }))}
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Longitud</Label>
+                <Input
+                  placeholder="Ej: -74.072092"
+                  value={addPassengerForm.longitud}
+                  onChange={e => setAddPassengerForm(f => ({ ...f, longitud: e.target.value }))}
+                />
+              </div>
+            </div>
+            {addPassengerCapacity > 0 && addPassengerCurrentCount >= addPassengerCapacity && (
+              <div className="rounded-md border border-yellow-400 bg-yellow-50 px-3 py-2 text-sm text-yellow-800">
+                Esta ruta tiene <strong>{addPassengerCurrentCount}/{addPassengerCapacity}</strong> pasajeros y ya está al límite de su capacidad. Agregar este pasajero generará <strong>sobrecupo</strong>.
+              </div>
+            )}
+            <div className="space-y-1">
+              <Label>Posición en la ruta</Label>
+              <Select
+                value={String(addPassengerInsertAfter)}
+                onValueChange={v => setAddPassengerInsertAfter(Number(v))}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Seleccionar posición" />
+                </SelectTrigger>
+                <SelectContent>
+                  {addPassengerStops.map(s => (
+                    <SelectItem key={s.order} value={String(s.order)}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddPassengerOpen(false)} disabled={addPassengerIsSaving}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleSavePassenger}
+              disabled={
+                !addPassengerForm.nombre ||
+                isNaN(parseFloat(addPassengerForm.latitud)) ||
+                isNaN(parseFloat(addPassengerForm.longitud)) ||
+                addPassengerIsSaving
+              }
+              variant={addPassengerCapacity > 0 && addPassengerCurrentCount >= addPassengerCapacity ? "destructive" : "default"}
+            >
+              {addPassengerIsSaving ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              {addPassengerCapacity > 0 && addPassengerCurrentCount >= addPassengerCapacity
+                ? "Guardar con sobrecupo"
+                : "Guardar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Banner indicating historical execution */}
       {selectedRunId && routes.length > 0 && (
@@ -1139,18 +1305,17 @@ const HistoryPage = () => {
                                   />
                                   <p className="font-semibold text-sm">Detalles de Paradas</p>
                                 </div>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="h-7 text-xs"
-                                  onClick={() => {
-                                    setZoomToRoute(selectedRouteIndex);
-                                    setTimeout(() => setZoomToRoute(null), 100);
-                                  }}
-                                >
-                                  <ZoomIn className="w-3 h-3 mr-1" />
-                                  Ver ruta completa
-                                </Button>
+                                <div className="flex gap-1">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 text-xs"
+                                    onClick={openAddPassenger}
+                                  >
+                                    <UserPlus className="w-3 h-3 mr-1" />
+                                    Agregar pasajero
+                                  </Button>
+                                </div>
                               </div>
                               <div className="space-y-2">
                                 {finalStopsWithDetails.map((stop, idx) => (

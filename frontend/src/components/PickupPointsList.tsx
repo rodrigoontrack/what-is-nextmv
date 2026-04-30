@@ -79,8 +79,7 @@ const PickupPointsList = ({ points, onRemove, onPointClick, onEdit }: PickupPoin
                     </span>
                   )}
                 </div>
-                {/* Show all passenger names when quantity >= 2 */}
-                {point.quantity && point.quantity >= 2 && point.all_nombres && point.all_nombres.length > 0 && (
+                {point.all_nombres && point.all_nombres.length > 0 && (
                   <div className="mt-1 space-y-1">
                     <p className="text-xs font-semibold text-muted-foreground">Pasajeros:</p>
                     <div className="flex flex-wrap gap-1">

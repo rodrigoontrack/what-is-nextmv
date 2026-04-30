@@ -50,6 +50,10 @@ export const createRouteScheduleVehicle = (data: any) =>
 export const createBusStop = (data: any) =>
   request<any>("/bus-stops", { method: "POST", body: JSON.stringify(data) });
 
+// --- Route Schedule Trackables ---
+export const createRouteScheduleTrackable = (data: any) =>
+  request<any>("/route-schedule-trackables", { method: "POST", body: JSON.stringify(data) });
+
 // --- Vehicles ---
 export const getVehiclesByOrganization = (orgId: number) =>
   request<any[]>(`/vehicles/organization/${orgId}`);
@@ -93,3 +97,12 @@ export const createStop = (data: any) =>
 
 export const getStopsByRoute = (routeOptimizationId: number) =>
   request<any[]>(`/stops/route/${routeOptimizationId}`);
+
+export const addPassengerToRoute = (routeOptimizationId: number, data: {
+  nombre: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  insertAfterOrder: number;
+}) =>
+  request<any>(`/stops/route/${routeOptimizationId}/add`, { method: "POST", body: JSON.stringify(data) });

@@ -6,7 +6,6 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-route
 import Index from "./pages/Index";
 import History from "./pages/History";
 import Geocoding from "./pages/Geocoding";
-import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -15,7 +14,7 @@ const AppRoutes = () => {
   const location = useLocation();
   return (
     <Routes>
-      <Route path="/" element={<Home />} />
+      <Route path="/" element={<Navigate to="/new" replace />} />
       <Route path="/new" element={<Index key={location.key} />} />
       <Route path="/history" element={<History />} />
       <Route path="/geocoding" element={<Geocoding />} />

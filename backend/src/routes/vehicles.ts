@@ -58,17 +58,13 @@ router.get("/:id", async (req, res) => {
 router.post("/", async (req, res) => {
   const { max_distance, start_latitude, start_longitude, end_latitude, end_longitude, fk_vehicle } = req.body;
   const values = [max_distance ?? null, start_latitude ?? null, start_longitude ?? null, end_latitude ?? null, end_longitude ?? null, fk_vehicle ?? null];
-  console.log("[POST /api/vehicles] body:", req.body);
-  console.log("[POST /api/vehicles] values:", values);
   try {
     const [result]: any = await pool.query(
       `INSERT INTO vehicle_optimization (max_distance, start_latitude, start_longitude, end_latitude, end_longitude, fk_vehicle)
        VALUES (?, ?, ?, ?, ?, ?)`,
       values
     );
-    console.log("[POST /api/vehicles] insertId:", result.insertId);
     const [rows]: any = await pool.query("SELECT * FROM vehicle_optimization WHERE id = ?", [result.insertId]);
-    console.log("[POST /api/vehicles] created row:", rows[0]);
     res.status(201).json(rows[0]);
   } catch (err: any) {
     console.error("[POST /api/vehicles] MYSQL ERROR:", err?.code, err?.sqlMessage, err?.sql);

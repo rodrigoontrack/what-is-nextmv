@@ -14,14 +14,12 @@ router.post("/", async (req, res) => {
     fk_route_schedule ?? null,
     special ?? 0,
   ];
-  console.log("[POST /api/bus-stops] body:", req.body);
   try {
     const [result]: any = await pool.query(
       `INSERT INTO bus_stop (latitude, longitude, address, next_stop, fk_route_schedule, special)
        VALUES (?, ?, ?, ?, ?, ?)`,
       values
     );
-    console.log("[POST /api/bus-stops] insertId:", result.insertId);
     const [rows]: any = await pool.query("SELECT * FROM bus_stop WHERE id = ?", [result.insertId]);
     res.status(201).json(rows[0]);
   } catch (err: any) {
