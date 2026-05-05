@@ -64,6 +64,12 @@ export const getVehicleByPlate = (plate: string) =>
 export const createVehicleOptimization = (data: any) =>
   request<any>("/vehicles", { method: "POST", body: JSON.stringify(data) });
 
+export const updateVehicleCapacity = (plate: string, capacity: number) =>
+  request<any>(`/vehicles/plate/${encodeURIComponent(plate)}/capacity`, {
+    method: "PATCH",
+    body: JSON.stringify({ capacity }),
+  });
+
 // --- Optimizations ---
 export const getOptimizations = () =>
   request<any[]>("/optimizations");

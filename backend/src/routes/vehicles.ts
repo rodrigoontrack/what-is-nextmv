@@ -43,6 +43,24 @@ router.get("/plate/:plate", async (req, res) => {
   }
 });
 
+// PATCH update capacity on the vehicle table by plate
+router.patch("/plate/:plate/capacity", async (req, res) => {
+  const { capacity } = req.body;
+  if (capacity === undefined || isNaN(Number(capacity)) || Number(capacity) <= 0) {
+    return res.status(400).json({ error: "Invalid capacity value" });
+  }
+  try {
+    const [result]: any = await pool.query(
+      "UPDATE vehicle SET capacity = ? WHERE plate = ?",
+      [Math.floor(Number(capacity)), req.params.plate]
+    );
+    if (result.affectedRows === 0) return res.status(404).json({ error: "Vehicle not found" });
+    res.json({ plate: req.params.plate, capacity: Math.floor(Number(capacity)) });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to update vehicle capacity", detail: String(err) });
+  }
+});
+
 // GET single vehicle optimization
 router.get("/:id", async (req, res) => {
   try {

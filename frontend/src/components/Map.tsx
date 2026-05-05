@@ -43,11 +43,12 @@ interface MapProps {
   focusLocation?: { lon: number; lat: number } | null; // Specific location to zoom to
   zoomToRoute?: number | null; // Trigger to zoom to a specific route
   initialCenter?: [number, number]; // [lng, lat] for initial map center
+  orgLocation?: [number, number]; // [lng, lat] of the organization — shown as home marker after optimization
 }
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string;
 
-const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, focusLocation, zoomToRoute, initialCenter }: MapProps) => {
+const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibilityChange, onMapClick, clickMode = false, focusedPoint, vehicleLocationMode, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, focusLocation, zoomToRoute, initialCenter, orgLocation }: MapProps) => {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<mapboxgl.Marker[]>([]);
@@ -281,6 +282,31 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
         )
         .addTo(map.current!);
       markersRef.current.push(endMarker);
+    }
+
+    // Add organization home marker after optimization (pin shape so it floats above route start markers)
+    if (routes.length > 0 && orgLocation) {
+      const homeEl = document.createElement("div");
+      homeEl.style.cssText = "display:flex;flex-direction:column;align-items:center;cursor:pointer;";
+      homeEl.innerHTML = `
+        <div style="width:38px;height:38px;background:#111827;border-radius:10px;border:3px solid white;box-shadow:0 4px 14px rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="white" width="20" height="20"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+        </div>
+        <div style="width:0;height:0;border-left:7px solid transparent;border-right:7px solid transparent;border-top:10px solid #111827;margin-top:-1px;"></div>
+      `;
+
+      const homeMarker = new mapboxgl.Marker({ element: homeEl, anchor: "bottom" })
+        .setLngLat(orgLocation)
+        .setPopup(
+          new mapboxgl.Popup({ offset: 10 }).setHTML(
+            `<div style="padding:8px">
+              <p style="font-weight:700;margin:0 0 2px">Organización</p>
+              <p style="font-size:11px;color:#6b7280;margin:0">${orgLocation[1].toFixed(5)}, ${orgLocation[0].toFixed(5)}</p>
+            </div>`
+          )
+        )
+        .addTo(map.current!);
+      markersRef.current.push(homeMarker);
     }
 
     // Color palette for different vehicles (must match the one used for routes)
@@ -918,7 +944,7 @@ const Map = ({ pickupPoints, routes, vehicles = [], visibleRoutes, onRouteVisibi
       }
     }
     // NOTE: visibleRoutes and selectedRouteIndex are intentionally NOT in dependencies - we only update visibility/zoom via separate useEffects below
-  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex]);
+  }, [pickupPoints, routes, mapLoaded, focusedPoint, vehicleStartLocation, vehicleEndLocation, selectedRouteIndex, orgLocation]);
 
   // Update route visibility when visibleRoutes changes (separate from route drawing to avoid redrawing)
   useEffect(() => {

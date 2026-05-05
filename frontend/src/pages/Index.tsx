@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useToast } from "@/hooks/use-toast";
-import { getPickupPoints, createPickupPoint, updatePickupPoint, deletePickupPoint, getOptimizations, getOptimization, createOptimization, getRoutesByOptimization, createRoute, createStop, createVehicleOptimization, createRouteRecord, createSchedule, createRouteSchedule, createRouteScheduleVehicle, createBusStop, createRouteScheduleTrackable, getOrganization, getVehicleByPlate, getVehiclesByOrganization } from "@/lib/api";
+import { getPickupPoints, createPickupPoint, updatePickupPoint, deletePickupPoint, getOptimizations, getOptimization, createOptimization, getRoutesByOptimization, createRoute, createStop, createVehicleOptimization, createRouteRecord, createSchedule, createRouteSchedule, createRouteScheduleVehicle, createBusStop, createRouteScheduleTrackable, getOrganization, getVehicleByPlate, getVehiclesByOrganization, updateVehicleCapacity } from "@/lib/api";
 import Map from "@/components/Map";
 import PickupPointForm from "@/components/PickupPointForm";
 import VehicleConfig from "@/components/VehicleConfig";
@@ -150,6 +150,9 @@ const Index = () => {
   const [scheduleFormDays, setScheduleFormDays] = useState({ monday: false, tuesday: false, wednesday: false, thursday: false, friday: false, saturday: false, sunday: false });
   const [scheduleFormStartTime, setScheduleFormStartTime] = useState('');
   const [scheduleFormEndTime, setScheduleFormEndTime] = useState('');
+  const [vehiclesWithoutCapacity, setVehiclesWithoutCapacity] = useState<Vehicle[]>([]);
+  const [showMissingCapacityDialog, setShowMissingCapacityDialog] = useState(false);
+  const [missingCapacityValues, setMissingCapacityValues] = useState<Record<string, string>>({});
   const { toast } = useToast();
 
   // Calculate total passengers from pickup points
@@ -1127,9 +1130,6 @@ const Index = () => {
   const handleExcelUpload = async (file: File) => {
     setIsUploadingFile(true);
     try {
-      // First, delete all existing pickup points
-      await Promise.all(pickupPoints.map((p) => deletePickupPoint(Number(p.id)).catch(() => {})));
-      setPickupPoints([]);
 
       // Dynamically import xlsx library
       // @ts-ignore - xlsx types may not be available until package is installed
@@ -1177,21 +1177,14 @@ const Index = () => {
       const allKeys: string[] = (rawRows[0] || []).map((k: any) => String(k ?? "").trim()).filter((k: string) => k !== "");
       
       // More flexible column name detection (case-insensitive, handles variations and Spanish)
-      const latitudeKey = allKeys.find(
-        key => {
-          const normalized = key.toLowerCase().trim();
-          return normalized === "latitude" || normalized === "lat" || 
-                 normalized === "latitud" || normalized.includes("lat");
-        }
-      );
-      const longitudeKey = allKeys.find(
-        key => {
-          const normalized = key.toLowerCase().trim();
-          return normalized === "longitude" || normalized === "lon" || 
-                 normalized === "lng" || normalized === "longitud" || 
-                 normalized.includes("lon") || normalized.includes("lng");
-        }
-      );
+      const latitudeKey = allKeys.find(key => {
+        const n = key.toLowerCase().trim();
+        return n === "latitude" || n === "lat" || n === "latitud";
+      });
+      const longitudeKey = allKeys.find(key => {
+        const n = key.toLowerCase().trim();
+        return n === "longitude" || n === "lon" || n === "lng" || n === "longitud";
+      });
       const quantityKey = allKeys.find(
         key => {
           const normalized = key.toLowerCase().trim();
@@ -1499,6 +1492,8 @@ const Index = () => {
           all_nombres: localData?.all_nombres,
         };
       });
+      // Delete existing points only after successful validation and processing
+      await Promise.all(pickupPoints.map((p) => deletePickupPoint(Number(p.id)).catch(() => {})));
       setPickupPoints(mergedPoints);
 
       // Show success message with detailed consolidation info
@@ -1565,25 +1560,18 @@ const Index = () => {
 
   const handleVehicleExcelUpload = async (file: File) => {
     try {
-      // Dynamically import xlsx library
       // @ts-ignore - xlsx types may not be available until package is installed
       const XLSX = await import("xlsx").catch(() => {
         throw new Error("xlsx module not found. Please install it: npm install xlsx");
       });
-      
-      // Read the file
+
       const arrayBuffer = await file.arrayBuffer();
       const workbook = XLSX.read(arrayBuffer, { type: "array" });
-      
-      // Get the first sheet
       const firstSheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[firstSheetName];
-      
-      // Read everything as arrays of arrays (header: 1) to avoid key mismatch
       const allRawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: "" }) as any[][];
 
       if (!allRawRows || allRawRows.length < 2) {
-        console.error("Not enough rows. allRawRows.length:", allRawRows?.length);
         toast({
           title: "Error",
           description: `El archivo Excel solo tiene ${allRawRows?.length ?? 0} fila(s). Se necesita al menos la cabecera y una fila de datos.`,
@@ -1592,14 +1580,11 @@ const Index = () => {
         return;
       }
 
-      // Find column indices from header row
       const headers: string[] = allRawRows[0].map((h: any) => String(h ?? "").toLowerCase().trim());
       const dataRows = allRawRows.slice(1).filter(row => row.some((cell: any) => String(cell ?? "").trim() !== ""));
 
-      const findIdx = (matchers: string[]) => {
-        const idx = headers.findIndex(h => matchers.some(m => h === m || h.includes(m)));
-        return idx;
-      };
+      const findIdx = (matchers: string[]) =>
+        headers.findIndex(h => matchers.some(m => h === m || h.includes(m)));
 
       const placaIdx      = findIdx(["placa"]);
       const capacidadIdx  = findIdx(["capacidad"]);
@@ -1610,82 +1595,61 @@ const Index = () => {
       const finLonIdx     = findIdx(["fin_longitud", "fin_lon"]);
       const grupoIdx      = findIdx(["grupo"]);
 
-      if (placaIdx === -1 || capacidadIdx === -1) {
-        console.error("Missing required columns:", { placaIdx, capacidadIdx });
+      if (placaIdx === -1) {
         toast({
           title: "Error",
-          description: `No se encontraron las columnas requeridas. Buscando: "placa", "capacidad". Columnas encontradas: ${headers.join(", ")}`,
+          description: `No se encontró la columna requerida "placa". Columnas encontradas: ${headers.join(", ")}`,
           variant: "destructive",
         });
         return;
       }
 
-      // Process vehicles
-      const vehiclesToInsert: Vehicle[] = [];
-      let processedCount = 0;
+      type ParsedRow = {
+        placa: string;
+        excelCapacity?: number;
+        distanciaMax?: number;
+        grupo?: string;
+        startLocation?: { lon: number; lat: number };
+        endLocation?: { lon: number; lat: number };
+      };
+
+      const parsedRows: ParsedRow[] = [];
       let skippedCount = 0;
 
       for (const row of dataRows) {
         const placa = String(row[placaIdx] ?? "").trim();
-        const capacidad = parseFloat(String(row[capacidadIdx] ?? ""));
+        if (!placa) { skippedCount++; continue; }
+
+        let excelCapacity: number | undefined;
+        if (capacidadIdx !== -1) {
+          const raw = parseFloat(String(row[capacidadIdx] ?? ""));
+          if (!isNaN(raw) && raw > 0) excelCapacity = Math.floor(raw);
+        }
+
         const distanciaRaw = distanciaIdx !== -1 ? parseFloat(String(row[distanciaIdx] ?? "")) : NaN;
         const distanciaMax = (!isNaN(distanciaRaw) && distanciaRaw > 0) ? distanciaRaw : undefined;
-        const grupo = grupoIdx !== -1 ? String(row[grupoIdx] ?? "").trim() : undefined;
+        const grupo = grupoIdx !== -1 ? String(row[grupoIdx] ?? "").trim() || undefined : undefined;
 
-        if (!placa || isNaN(capacidad)) {
-          skippedCount++;
-          continue;
-        }
-
-        if (capacidad <= 0) {
-          skippedCount++;
-          continue;
-        }
-
-        // Parse optional start location
-        let startLocation: { lon: number; lat: number } | undefined = undefined;
+        let startLocation: { lon: number; lat: number } | undefined;
         if (inicioLatIdx !== -1 && inicioLonIdx !== -1) {
-          const inicioLat = parseFloat(String(row[inicioLatIdx] ?? ""));
-          const inicioLon = parseFloat(String(row[inicioLonIdx] ?? ""));
-          if (!isNaN(inicioLat) && !isNaN(inicioLon) &&
-              inicioLat >= -90 && inicioLat <= 90 &&
-              inicioLon >= -180 && inicioLon <= 180) {
-            startLocation = { lat: inicioLat, lon: inicioLon };
-          }
+          const lat = parseFloat(String(row[inicioLatIdx] ?? ""));
+          const lon = parseFloat(String(row[inicioLonIdx] ?? ""));
+          if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)
+            startLocation = { lat, lon };
         }
 
-        // Parse optional end location
-        let endLocation: { lon: number; lat: number } | undefined = undefined;
+        let endLocation: { lon: number; lat: number } | undefined;
         if (finLatIdx !== -1 && finLonIdx !== -1) {
-          const finLat = parseFloat(String(row[finLatIdx] ?? ""));
-          const finLon = parseFloat(String(row[finLonIdx] ?? ""));
-          if (!isNaN(finLat) && !isNaN(finLon) &&
-              finLat >= -90 && finLat <= 90 &&
-              finLon >= -180 && finLon <= 180) {
-            endLocation = { lat: finLat, lon: finLon };
-          }
+          const lat = parseFloat(String(row[finLatIdx] ?? ""));
+          const lon = parseFloat(String(row[finLonIdx] ?? ""));
+          if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)
+            endLocation = { lat, lon };
         }
 
-        const vehicle: Vehicle = {
-          name: placa,
-          capacity: Math.floor(capacidad),
-          max_distance: distanciaMax,
-          grupo: grupo || undefined, // Include grupo if available
-        };
-
-        // Add locations if provided
-        if (startLocation) {
-          vehicle.start_location = startLocation;
-        }
-        if (endLocation) {
-          vehicle.end_location = endLocation;
-        }
-
-        vehiclesToInsert.push(vehicle);
-        processedCount++;
+        parsedRows.push({ placa, excelCapacity, distanciaMax, grupo, startLocation, endLocation });
       }
 
-      if (vehiclesToInsert.length === 0) {
+      if (parsedRows.length === 0) {
         toast({
           title: "Error",
           description: "No se encontraron vehículos válidos en el archivo",
@@ -1694,17 +1658,63 @@ const Index = () => {
         return;
       }
 
-      // Vehicles from Excel are loaded into local state only (validated by plate against DB)
+      // For vehicles without Excel capacity, look up capacity in the DB
+      const needsDbLookup = parsedRows.filter(r => !r.excelCapacity);
+      const dbCapacities: Record<string, number> = {};
+
+      if (needsDbLookup.length > 0) {
+        const results = await Promise.allSettled(
+          needsDbLookup.map(r => getVehicleByPlate(r.placa))
+        );
+        needsDbLookup.forEach((r, i) => {
+          const result = results[i];
+          if (result.status === "fulfilled" && result.value?.capacity > 0)
+            dbCapacities[r.placa] = Math.floor(Number(result.value.capacity));
+        });
+      }
+
+      const vehiclesToInsert: Vehicle[] = [];
+      const vehiclesMissingCapacity: Vehicle[] = [];
+
+      for (const r of parsedRows) {
+        const capacity = r.excelCapacity ?? dbCapacities[r.placa];
+        const vehicle: Vehicle = {
+          name: r.placa,
+          capacity: capacity ?? 0,
+          max_distance: r.distanciaMax,
+          grupo: r.grupo,
+        };
+        if (r.startLocation) vehicle.start_location = r.startLocation;
+        if (r.endLocation) vehicle.end_location = r.endLocation;
+
+        if (capacity) {
+          vehiclesToInsert.push(vehicle);
+        } else {
+          vehiclesMissingCapacity.push(vehicle);
+        }
+      }
+
       setVehicles(vehiclesToInsert);
 
-      toast({
-        title: "Archivo cargado exitosamente",
-        description: `Se agregaron ${processedCount} vehículos${skippedCount > 0 ? ` (${skippedCount} filas omitidas)` : ""}`,
-      });
+      if (vehiclesMissingCapacity.length > 0) {
+        setVehiclesWithoutCapacity(vehiclesMissingCapacity);
+        setMissingCapacityValues(Object.fromEntries(vehiclesMissingCapacity.map(v => [v.name, ""])));
+        setShowMissingCapacityDialog(true);
+        if (vehiclesToInsert.length > 0) {
+          toast({
+            title: "Archivo cargado",
+            description: `${vehiclesToInsert.length} vehículo(s) cargados. ${vehiclesMissingCapacity.length} sin capacidad configurada.`,
+          });
+        }
+      } else {
+        toast({
+          title: "Archivo cargado exitosamente",
+          description: `Se agregaron ${vehiclesToInsert.length} vehículos${skippedCount > 0 ? ` (${skippedCount} filas omitidas)` : ""}`,
+        });
+      }
     } catch (error) {
       console.error("Error processing vehicle Excel file:", error);
       const errorMessage = error instanceof Error ? error.message : "Error desconocido";
-      
       if (errorMessage.includes("xlsx") || errorMessage.includes("Cannot find module")) {
         toast({
           title: "Error",
@@ -4101,6 +4111,7 @@ const Index = () => {
                   focusLocation={focusLocation}
                   zoomToRoute={zoomToRoute}
                   initialCenter={orgCenter}
+                  orgLocation={orgCenter}
                 />}
               </CardContent>
             </Card>
@@ -4603,6 +4614,70 @@ const Index = () => {
               </div>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: vehicles without capacity after Excel upload */}
+      <Dialog open={showMissingCapacityDialog} onOpenChange={setShowMissingCapacityDialog}>
+        <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Vehículos sin capacidad configurada</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {vehiclesWithoutCapacity.length === 1
+              ? "El siguiente vehículo no tiene capacidad registrada en la base de datos."
+              : `Los siguientes ${vehiclesWithoutCapacity.length} vehículos no tienen capacidad registrada en la base de datos.`}
+            {" "}Ingresa la capacidad para incluirlos, o cierra para omitirlos.
+          </p>
+          <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+            {vehiclesWithoutCapacity.map(v => (
+              <div key={v.name} className="flex items-center gap-3">
+                <span className="text-sm font-medium flex-1 truncate">{v.name}</span>
+                <Input
+                  type="number"
+                  min={1}
+                  placeholder="Capacidad"
+                  value={missingCapacityValues[v.name] ?? ""}
+                  onChange={e =>
+                    setMissingCapacityValues(prev => ({ ...prev, [v.name]: e.target.value }))
+                  }
+                  className="w-32"
+                />
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={() => setShowMissingCapacityDialog(false)}>
+              Omitir
+            </Button>
+            <Button
+              onClick={async () => {
+                const toAdd = vehiclesWithoutCapacity
+                  .filter(v => {
+                    const val = parseFloat(missingCapacityValues[v.name]);
+                    return !isNaN(val) && val > 0;
+                  })
+                  .map(v => ({
+                    ...v,
+                    capacity: Math.floor(parseFloat(missingCapacityValues[v.name])),
+                  }));
+                if (toAdd.length > 0) {
+                  setVehicles(prev => [...prev, ...toAdd]);
+                  // Persist capacities to DB (best-effort, don't block UX on failure)
+                  await Promise.allSettled(
+                    toAdd.map(v => updateVehicleCapacity(v.name, v.capacity))
+                  );
+                  toast({
+                    title: "Vehículos agregados",
+                    description: `Se agregaron ${toAdd.length} vehículo(s) con capacidad configurada.`,
+                  });
+                }
+                setShowMissingCapacityDialog(false);
+              }}
+            >
+              Confirmar ({Object.values(missingCapacityValues).filter(v => parseFloat(v) > 0).length} vehículos)
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </Layout>
